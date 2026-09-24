@@ -86,7 +86,8 @@ cormorant_test_stand/
     └── tcl/
         ├── lib.tcl                — shared Tcl: ip-repo override + locked-IP / BD refresh
         ├── build_hw.tcl
-        └── run_sim.tcl
+        ├── run_sim.tcl            — open .xpr, launch xsim, run -all (batch by default)
+        └── run_sim_batch.tcl      — no-wave xsim -tclbatch script used unless TS_WAVES=1
 ```
 
 ## Prerequisites
@@ -266,6 +267,8 @@ cover it (see "When the kernel grows new AXI-Lite registers").
 | `REPORT` | Single-kernel shorthand for `REPORT_<k>` |
 | `IP_REPO_<k>` | Override the HLS IP repository path stored in kernel `<k>`'s `.xpr` |
 | `IP_REPO` | Single-kernel shorthand for `IP_REPO_<k>` |
+| `TS_WAVES` | `1` restores Vivado's default sim tcl (`add_wave /` into a .wdb). Default: batch run with no waveform logging; same results, smaller .wdb, modestly faster on large fixtures (xsim is CPU-bound in the design itself) |
+| `TS_VERBOSE` | `1` passes `+VERBOSE` to the testbench so its per-beat AXI / DDR monitors print (conv_tb; default off — they dominate the log) |
 
 ---
 

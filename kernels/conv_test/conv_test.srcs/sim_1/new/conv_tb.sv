@@ -854,6 +854,17 @@ module conv_tb;
     endclass
 
     // =========================================================================
+    // +VERBOSE — per-transaction tracing.  The DDRC write monitor and the
+    // CK_AXI channel probes below print one line per AXI beat / DDR write;
+    // on the large fixtures that is >500k lines and dominates wall-clock.
+    // They are OFF unless the run passes -testplusarg VERBOSE (the test
+    // stand's run_sim.tcl adds it when TS_VERBOSE=1).  PASS/FAIL, per-test
+    // [TEST]/[SCB] lines and the JSON report are unaffected.
+    // =========================================================================
+    bit verbose;
+    initial verbose = $test$plusargs("VERBOSE");
+
+    // =========================================================================
     // DDRC write-request monitor - logs every write the PS VIP issues to DDR.
     // =========================================================================
     initial begin : ddrc_wr_monitor
@@ -862,6 +873,7 @@ module conv_tb;
         forever begin
             @(posedge dut.zynq_ultra_ps_e_0.inst.ddrc.wr_req);
             wr_cnt++;
+            if (verbose)
             $display("[%0t][DDRC_WR#%0d] addr=0x%010h bytes=%0d strb[3:0]=0x%01h data[31:0]=0x%08h",
                      $time, wr_cnt,
                      dut.zynq_ultra_ps_e_0.inst.ddrc.wr_addr,
@@ -965,7 +977,7 @@ module conv_tb;
             @(posedge dut.ConvKernel_0_m_axi_gmem0_ARVALID or
               posedge dut.ConvKernel_0_m_axi_gmem0_ARREADY);
             #1;
-            if (dut.ConvKernel_0_m_axi_gmem0_ARVALID | dut.ConvKernel_0_m_axi_gmem0_ARREADY)
+            if (verbose && (dut.ConvKernel_0_m_axi_gmem0_ARVALID | dut.ConvKernel_0_m_axi_gmem0_ARREADY))
                 $display("[%0t][CK_AXI] gmem0 AR: ARVALID=%b ARREADY=%b  ADDR=%016h  LEN=%0d  SIZE=%0d",
                     $time,
                     dut.ConvKernel_0_m_axi_gmem0_ARVALID,
@@ -982,7 +994,7 @@ module conv_tb;
         r_beat = 0;
         forever @(posedge dut.zynq_ultra_ps_e_0_pl_clk0) begin
             #1;
-            if (dut.ConvKernel_0_m_axi_gmem0_RVALID & dut.ConvKernel_0_m_axi_gmem0_RREADY) begin
+            if (verbose && dut.ConvKernel_0_m_axi_gmem0_RVALID & dut.ConvKernel_0_m_axi_gmem0_RREADY) begin
                 $display("[%0t][CK_AXI] gmem0 R:  beat#%0d  RDATA=%08h  RLAST=%b  RRESP=%b",
                     $time, r_beat,
                     dut.ConvKernel_0_m_axi_gmem0_RDATA,
@@ -999,7 +1011,7 @@ module conv_tb;
             @(posedge dut.ConvKernel_0_m_axi_gmem3_AWVALID or
               posedge dut.ConvKernel_0_m_axi_gmem3_AWREADY);
             #1;
-            if (dut.ConvKernel_0_m_axi_gmem3_AWVALID | dut.ConvKernel_0_m_axi_gmem3_AWREADY)
+            if (verbose && (dut.ConvKernel_0_m_axi_gmem3_AWVALID | dut.ConvKernel_0_m_axi_gmem3_AWREADY))
                 $display("[%0t][CK_AXI] gmem3 AW: AWVALID=%b AWREADY=%b  ADDR=%016h  LEN=%0d",
                     $time,
                     dut.ConvKernel_0_m_axi_gmem3_AWVALID,
@@ -1009,11 +1021,60 @@ module conv_tb;
         end
     end
 
+    // ---- gmem3 W-channel (y write data beats) ---------------------------
+    initial begin : ck_gmem3_w_probe
+        int w_beat;
+        w_beat = 0;
+        forever @(posedge dut.zynq_ultra_ps_e_0_pl_clk0) begin
+            #1;
+            if (verbose && dut.ConvKernel_0_m_axi_gmem3_WVALID & dut.ConvKernel_0_m_axi_gmem3_WREADY) begin
+                $display("[%0t][CK_AXI] gmem3 W:  beat#%0d  WSTRB=%h  WLAST=%b",
+                    $time, w_beat,
+                    dut.ConvKernel_0_m_axi_gmem3_WSTRB,
+                    dut.ConvKernel_0_m_axi_gmem3_WLAST);
+                w_beat++;
+            end
+        end
+    end
+
+    // ---- acc_stream FIFO occupancy (consumer drain vs writer pop rate) ----
+    // Internal probe, +VERBOSE only: one summary line per 1024 pushes.
+    initial begin : ck_acc_stream_probe
+        int pushes, pops;
+        longint last_push;
+        pushes = 0; pops = 0; last_push = 0;
+        forever @(posedge dut.zynq_ultra_ps_e_0_pl_clk0) begin
+            #1;
+            if (verbose) begin
+                if (`CK.process_conv_kernel_tile_U0_acc_stream_write & `CK.acc_stream_full_n) begin
+                    pushes++;
+                    if ($time - last_push > 1000)
+                        $display("[%0t][CK_ACC] push gap %0d ns before push #%0d (pops=%0d occupancy=%0d)",
+                                 $time, $time - last_push, pushes, pops, `CK.acc_stream_num_data_valid);
+                    last_push = $time;
+                    if ((pushes & 1023) == 0)
+                        $display("[%0t][CK_ACC] pushes=%0d pops=%0d occupancy=%0d",
+                                 $time, pushes, pops, `CK.acc_stream_num_data_valid);
+                end
+                if (`CK.process_conv_kernel_tile_U0_ap_done)
+                    $display("[%0t][CK_ACC] consumer ap_done (pushes=%0d)", $time, pushes);
+                if (`CK.write_output_tile_U0_ap_done)
+                    $display("[%0t][CK_ACC] writer ap_done (pops=%0d)", $time, pops);
+                if (`CK.input_patch_producer_U0_ap_done)
+                    $display("[%0t][CK_ACC] patch producer ap_done", $time);
+                if (`CK.stream_load_weights_U0_ap_done)
+                    $display("[%0t][CK_ACC] weight producer ap_done", $time);
+                if (`CK.write_output_tile_U0_acc_stream_read & `CK.acc_stream_empty_n)
+                    pops++;
+            end
+        end
+    end
+
     // ---- gmem3 B-channel (y write response) -----------------------------
     initial begin : ck_gmem3_b_probe
         forever @(posedge dut.zynq_ultra_ps_e_0_pl_clk0) begin
             #1;
-            if (dut.ConvKernel_0_m_axi_gmem3_BVALID & dut.ConvKernel_0_m_axi_gmem3_BREADY)
+            if (verbose && dut.ConvKernel_0_m_axi_gmem3_BVALID & dut.ConvKernel_0_m_axi_gmem3_BREADY)
                 $display("[%0t][CK_AXI] gmem3 B:  BRESP=%b  (write response ack)",
                     $time, dut.ConvKernel_0_m_axi_gmem3_BRESP);
         end
@@ -1026,7 +1087,7 @@ module conv_tb;
 
     initial begin
         `PS.set_stop_on_error(1);
-        `PS.set_debug_level_info(1);
+        `PS.set_debug_level_info(verbose);   // VIP info chatter only under +VERBOSE
 
         // POR + system reset, then PL fabric reset.
         `PS.por_srstb_reset(1'b0);   // assert  → DDR model enters reset
