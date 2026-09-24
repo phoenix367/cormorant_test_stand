@@ -13,7 +13,7 @@
         "STRATEGY": [ { "value": "0", "resolve_type": "user", "format": "long", "usage": "all" } ],
         "ENABLE_ADVANCED_OPTIONS": [ { "value": "0", "resolve_type": "user", "format": "long", "usage": "all" } ],
         "ENABLE_PROTOCOL_CHECKERS": [ { "value": "0", "resolve_type": "user", "format": "long", "usage": "all" } ],
-        "XBAR_DATA_WIDTH": [ { "value": "32", "value_permission": "bd_and_user", "resolve_type": "user", "format": "long", "usage": "all" } ],
+        "XBAR_DATA_WIDTH": [ { "value": "128", "value_src": "user", "value_permission": "bd_and_user", "resolve_type": "user", "format": "long", "usage": "all" } ],
         "PCHK_WAITS": [ { "value": "0", "resolve_type": "user", "format": "long", "usage": "all" } ],
         "PCHK_MAX_RD_BURSTS": [ { "value": "2", "resolve_type": "user", "format": "long", "usage": "all" } ],
         "PCHK_MAX_WR_BURSTS": [ { "value": "2", "resolve_type": "user", "format": "long", "usage": "all" } ],
@@ -349,5 +349,5 @@
       }
     }
   },
-  "checksum": "6bb3b527"
+  "checksum": "180c47df"
 }
