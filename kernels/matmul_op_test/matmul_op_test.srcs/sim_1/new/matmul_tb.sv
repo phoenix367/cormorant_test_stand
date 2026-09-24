@@ -21,7 +21,7 @@
 //   max=0x7FFF (+127.996)  min=0x8000 (-128.0)
 //
 // Test fixtures live in the directory passed via +DATA_DIR=<dir>:
-//   manifest.txt        — one row per test (7 ints + label, see test::run)
+//   manifest.txt        — one row per test (8 ints + label, see test::run)
 //   test_<NN>_a.hex     — input A matrix as 16-bit raw values, one per line
 //   test_<NN>_b.hex     — input B matrix as 16-bit raw values, one per line
 //   test_<NN>_c.hex     — reference C output as 16-bit raw values, one per line
@@ -90,6 +90,7 @@ module matmul_tb;
     localparam [39:0] REG_A_BATCH_STRIDE = CTRL_BASE + 40'h54;
     localparam [39:0] REG_B_BATCH_STRIDE = CTRL_BASE + 40'h5C;
     localparam [39:0] REG_C_BATCH_STRIDE = CTRL_BASE + 40'h64;
+    localparam [39:0] REG_B_PACKED       = CTRL_BASE + 40'h6C;   // 0: row-major B, 1: tile-major packed B
 
     // -----------------------------------------------------------------------
     // Testbench parameters
@@ -129,6 +130,7 @@ module matmul_tb;
         int unsigned batch;
         int unsigned a_batch_stride; // 0 = broadcast A across batches
         int unsigned b_batch_stride; // 0 = broadcast B across batches
+        int unsigned b_packed;       // 0: row-major, 1: tile-major packed (manifest col 8)
         int unsigned c_batch_stride; // always = n × m  (derived, not in manifest)
 
         // Element counts (derived from dims + stride mode).
@@ -153,7 +155,8 @@ module matmul_tb;
                      int unsigned   m_,
                      int unsigned   batch_,
                      int unsigned   a_batch_stride_,
-                     int unsigned   b_batch_stride_);
+                     int unsigned   b_batch_stride_,
+                     int unsigned   b_packed_ = 0);
             int unsigned a_region_bytes, b_region_bytes;
 
             this.index          = index_;
@@ -164,6 +167,7 @@ module matmul_tb;
             this.batch          = batch_;
             this.a_batch_stride = a_batch_stride_;
             this.b_batch_stride = b_batch_stride_;
+            this.b_packed       = b_packed_;
             this.c_batch_stride = n_ * m_;
 
             // Element counts.
@@ -174,8 +178,12 @@ module matmul_tb;
             //   the stride at bi=0 either way.
             this.a_count = (a_batch_stride_ == 0) ? (n_ * k_)
                                                   : (batch_ * a_batch_stride_);
-            this.b_count = (b_batch_stride_ == 0) ? (k_ * m_)
-                                                  : (batch_ * b_batch_stride_);
+            // Packed B (MatmulKernel.h "Packed (tile-major) B layout"): each
+            // batch slice is k x roundup(m, 16) elements; the manifest's
+            // b_stride is already in packed elements.
+            this.b_count = (b_batch_stride_ == 0)
+                         ? (b_packed_ ? (k_ * (((m_ + 15) / 16) * 16)) : (k_ * m_))
+                         : (batch_ * b_batch_stride_);
             this.c_count = batch_ * n_ * m_;
 
             // DDR layout: A | gap | B | gap | C
@@ -344,6 +352,7 @@ module matmul_tb;
             axil_write(REG_A_BATCH_STRIDE, 32'(item.a_batch_stride));
             axil_write(REG_B_BATCH_STRIDE, 32'(item.b_batch_stride));
             axil_write(REG_C_BATCH_STRIDE, 32'(item.c_batch_stride));
+            axil_write(REG_B_PACKED,       32'(item.b_packed));
 
             // Enable ap_done interrupt and assert ap_start.
             axil_write(REG_GIE,     32'h1);
@@ -646,12 +655,12 @@ module matmul_tb;
         env     e;
         mm_item tests[$];
 
-        // Parse one manifest line — 7 ints + 1 trailing label token —
+        // Parse one manifest line — 8 ints + 1 trailing label token —
         // and create + load an mm_item.  Returns null if the line is
         // blank, a comment, or unparseable.  Manifest column layout
         // (matches the upstream matmul reference dump):
         //
-        //   idx n k m batch a_stride b_stride   label
+        //   idx n k m batch a_stride b_stride b_packed   label
         //
         // a_stride / b_stride are per-batch element counts.  A value of
         // 0 means "broadcast that operand across batches" (single matrix
@@ -661,7 +670,7 @@ module matmul_tb;
                                                         string data_dir);
             int unsigned idx;
             int unsigned n_, k_, m_, batch_;
-            int unsigned a_stride, b_stride;
+            int unsigned a_stride, b_stride, b_packed;
             string       label;
             int          rc;
             int          first;
@@ -676,16 +685,16 @@ module matmul_tb;
             if (first == line.len()) return null;
             if (line.getc(first) == "#") return null;
 
-            rc = $sscanf(line, "%d %d %d %d %d %d %d %s",
-                idx, n_, k_, m_, batch_, a_stride, b_stride, label);
-            if (rc < 7) begin
+            rc = $sscanf(line, "%d %d %d %d %d %d %d %d %s",
+                idx, n_, k_, m_, batch_, a_stride, b_stride, b_packed, label);
+            if (rc < 8) begin
                 $display("[%0t][TEST] WARN: skipping unparseable manifest line: %s",
                          $time, line);
                 return null;
             end
-            if (rc < 8) label = "(unlabelled)";
+            if (rc < 9) label = "(unlabelled)";
 
-            it = new(idx, label, n_, k_, m_, batch_, a_stride, b_stride);
+            it = new(idx, label, n_, k_, m_, batch_, a_stride, b_stride, b_packed);
             it.load_fixture(data_dir);
             return it;
         endfunction

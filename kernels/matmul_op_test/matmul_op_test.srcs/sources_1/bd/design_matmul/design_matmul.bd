@@ -3190,7 +3190,7 @@
       },
       "MatmulKernel_0": {
         "vlnv": "xilinx.com:hls:MatmulKernel:1.0",
-        "ip_revision": "2114800583",
+        "ip_revision": "2114800667",
         "xci_name": "design_matmul_MatmulKernel_0_0",
         "xci_path": "ip/design_matmul_MatmulKernel_0_0/design_matmul_MatmulKernel_0_0.xci",
         "inst_hier_path": "MatmulKernel_0",

@@ -4,7 +4,7 @@
     "xci_name": "design_matmul_MatmulKernel_0_0",
     "cell_name": "MatmulKernel_0",
     "component_reference": "xilinx.com:hls:MatmulKernel:1.0",
-    "ip_revision": "2114800583",
+    "ip_revision": "2114800667",
     "gen_directory": "../../../../../../matmul_op_test.gen/sources_1/bd/design_matmul/ip/design_matmul_MatmulKernel_0_0",
     "parameters": {
       "component_parameters": {
@@ -103,7 +103,7 @@
       },
       "runtime_parameters": {
         "IPCONTEXT": [ { "value": "IP_Integrator" } ],
-        "IPREVISION": [ { "value": "2114800583" } ],
+        "IPREVISION": [ { "value": "2114800667" } ],
         "MANAGED": [ { "value": "TRUE" } ],
         "OUTPUTDIR": [ { "value": "../../../../../../matmul_op_test.gen/sources_1/bd/design_matmul/ip/design_matmul_MatmulKernel_0_0" } ],
         "SELECTEDSIMMODEL": [ { "value": "" } ],
@@ -447,7 +447,7 @@
           "parameters": {
             "NUM_READ_OUTSTANDING": [ { "value": "16", "value_src": "constant", "value_permission": "bd_and_user", "usage": "all" } ],
             "NUM_WRITE_OUTSTANDING": [ { "value": "16", "value_src": "constant", "value_permission": "bd_and_user", "usage": "all" } ],
-            "MAX_READ_BURST_LENGTH": [ { "value": "16", "value_src": "constant", "value_permission": "bd_and_user", "usage": "all" } ],
+            "MAX_READ_BURST_LENGTH": [ { "value": "64", "value_src": "constant", "value_permission": "bd_and_user", "usage": "all" } ],
             "MAX_WRITE_BURST_LENGTH": [ { "value": "16", "value_src": "constant", "value_permission": "bd_and_user", "usage": "all" } ],
             "MAX_BURST_LENGTH": [ { "value": "256", "value_src": "constant", "value_permission": "bd_and_user", "usage": "all" } ],
             "PROTOCOL": [ { "value": "AXI4", "value_src": "constant", "value_permission": "bd_and_user", "usage": "all" } ],
@@ -982,6 +982,22 @@
                       "access": "write-only"
                     }
                   }
+                },
+                "b_packed": {
+                  "address_offset": "108",
+                  "size": 32,
+                  "display_name": "b_packed",
+                  "description": "Data signal of b_packed",
+                  "access": "write-only",
+                  "reset_value": "0",
+                  "fields": {
+                    "b_packed": {
+                      "bit_offset": 0,
+                      "bit_width": 32,
+                      "description": "Bit 31 to 0 of b_packed",
+                      "access": "write-only"
+                    }
+                  }
                 }
               }
             }
@@ -990,5 +1006,5 @@
       }
     }
   },
-  "checksum": "44259812"
+  "checksum": "8bd9182e"
 }
