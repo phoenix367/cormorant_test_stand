@@ -232,15 +232,22 @@ module conv_tb;
             // Element counts.  Weights and bias use ConvKernel's packed DDR
             // layout (ConvKernel.h "Weight / bias port width and DDR layout";
             // TestConvRef --dump-data writes the fixtures in it):
-            //   standard : out_ch * ceil(in_ch/16) * kh * kw * 16   (16 ic lanes
-            //              per kernel position, zero-padded last tile)
+            //   standard : out_ch * kh * kw * ((ic_tiles-1)*16 + last_lanes)
+            //              — 16 ic lanes per kernel position per tile, except
+            //              the LAST tile is a half tile of 8 lanes when it has
+            //              <= 8 valid channels (§2.34)
             //   depthwise: out_ch * roundup(kh*kw, 8)
             //   bias     : roundup(out_ch, 8)
             // The 16 / 8 are kTileIC and the 128-bit port's lanes per beat.
             this.x_count = batch_  * in_ch_  * in_h_  * in_w_;
-            this.w_count = is_depthwise_
-                         ? out_ch_ * (((kh_ * kw_) + 7) / 8) * 8
-                         : out_ch_ * ((in_ch_ + 15) / 16) * kh_ * kw_ * 16;
+            begin
+                int unsigned ic_tiles  = (in_ch_ + 15) / 16;
+                int unsigned last_rem  = in_ch_ - (ic_tiles - 1) * 16;
+                int unsigned last_lanes = (last_rem <= 8) ? 8 : 16;
+                this.w_count = is_depthwise_
+                             ? out_ch_ * (((kh_ * kw_) + 7) / 8) * 8
+                             : out_ch_ * kh_ * kw_ * ((ic_tiles - 1) * 16 + last_lanes);
+            end
             this.b_count = ((out_ch_ + 7) / 8) * 8;
             this.y_count = batch_  * out_ch_ * out_h_ * out_w_;
 
