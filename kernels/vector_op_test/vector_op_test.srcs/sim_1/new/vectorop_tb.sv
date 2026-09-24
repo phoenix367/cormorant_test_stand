@@ -42,9 +42,18 @@
 //   0x44 outer              (0x48 reserved)
 //   0x4C a_inc              (0x50 reserved)
 //   0x54 b_inc              (0x58 reserved)
-// outer / a_inc / b_inc reset to 0; outer=0 makes the kernel emit no writes,
-// so the testbench MUST program these every transaction (the manifest may
-// carry outer=1 a_inc=0 b_inc=0 — that still has to be written).
+//   0x5C act                (0x60 reserved)   fused activation, 0 = none
+// outer / a_inc / b_inc / act reset to 0; outer=0 makes the kernel emit no
+// writes, so the testbench MUST program these every transaction (the manifest
+// may carry outer=1 a_inc=0 b_inc=0 act=0 — that still has to be written).
+//
+// Geometry (VectorOP.h): run o covers a[o*a_inc .. +size), b[o*b_inc .. +size)
+// and c[o*(a_inc+b_inc) .. +size); every run start is 16-byte aligned (a_inc /
+// b_inc are 0 or a multiple of 8 elements).  The kernel's 128-bit ports read
+// whole words (lanes past `size` are masked) and write the last word of every
+// run whole, so c positions in [size, ceil8(size)) of a run hold 0 and the
+// positions up to the next run are untouched — the scoreboard compares only
+// the valid positions.
 // ============================================================================
 
 module vectorop_tb;
@@ -75,6 +84,7 @@ module vectorop_tb;
     localparam [39:0] REG_OUTER   = CTRL_BASE + 40'h44;  // outer-loop iteration count
     localparam [39:0] REG_A_INC   = CTRL_BASE + 40'h4C;  // A advance per outer iteration (elements)
     localparam [39:0] REG_B_INC   = CTRL_BASE + 40'h54;  // B advance per outer iteration (elements)
+    localparam [39:0] REG_ACT     = CTRL_BASE + 40'h5C;  // fused activation (0 none / 1 relu / 2 relu6)
 
     // Op enum (must match include/VectorOP.h)
     localparam int unsigned OP_ADD   = 0;
@@ -129,22 +139,21 @@ module vectorop_tb;
         int unsigned index;
         string       label;
 
-        // Manifest geometry / op control.  outer / a_inc / b_inc are stored
-        // verbatim from the upstream pipeline so the JSON report carries the
-        // full configuration — they're not currently programmed via AXI-Lite
-        // (the kernel's register interface only exposes a/b/c/size/op).
-        int unsigned size;          // elements per pass
+        // Manifest geometry / op control — all programmed via AXI-Lite.
+        int unsigned size;          // elements per run (outer iteration)
         int unsigned op;            // Op enum value
-        int unsigned outer;         // outer-loop count (manifest metadata)
-        int unsigned a_inc;         // per-outer-iter A advance (manifest metadata)
-        int unsigned b_inc;         // per-outer-iter B advance (manifest metadata)
+        int unsigned outer;         // outer-loop count
+        int unsigned a_inc;         // per-outer-iter A advance (elements, 0 = repeat)
+        int unsigned b_inc;         // per-outer-iter B advance (elements, 0 = repeat)
+        int unsigned act;           // fused activation (0 none / 1 relu / 2 relu6)
         bit          is_unary;      // 1 for RELU/RELU6 — kernel skips B reads
 
-        // Element counts (derived).  The upstream pipeline emits .hex files
-        // sized for the full sequence, so a/b/c each hold size * outer
-        // elements.
-        int unsigned ab_count;
+        // Element extents (derived from the geometry, see the header): the
+        // upstream pipeline emits .hex files of exactly these sizes.
+        int unsigned a_count;
+        int unsigned b_count;
         int unsigned c_count;
+        int unsigned c_inc;
 
         // DDR base addresses.  16-byte alignment matches the 128-bit AXI bus
         // width so every base sits on byte lane 0 — without that the kernel's
@@ -165,8 +174,9 @@ module vectorop_tb;
                      int unsigned   op_,
                      int unsigned   outer_,
                      int unsigned   a_inc_,
-                     int unsigned   b_inc_);
-            int unsigned ab_bytes;
+                     int unsigned   b_inc_,
+                     int unsigned   act_);
+            int unsigned a_bytes, b_bytes, n_outer;
 
             this.index    = index_;
             this.label    = lbl;
@@ -175,17 +185,28 @@ module vectorop_tb;
             this.outer    = outer_;
             this.a_inc    = a_inc_;
             this.b_inc    = b_inc_;
+            this.act      = act_;
             this.is_unary = (op_ == OP_RELU || op_ == OP_RELU6);
 
-            // a/b/c each cover size * outer elements (outer == 1 in current
-            // fixtures, so this collapses to size).
-            this.ab_count = size_ * (outer_ ? outer_ : 1);
-            this.c_count  = this.ab_count;
+            // Extents: (outer-1) * stride + size for each array.
+            n_outer       = outer_ ? outer_ : 1;
+            this.c_inc    = a_inc_ + b_inc_;
+            this.a_count  = (n_outer - 1) * a_inc_ + size_;
+            this.b_count  = (n_outer - 1) * b_inc_ + size_;
+            this.c_count  = (n_outer - 1) * this.c_inc + size_;
 
-            ab_bytes = align_up(this.ab_count * ELEM_BYTES, 16);
+            a_bytes = align_up(this.a_count * ELEM_BYTES, 16);
+            b_bytes = align_up(this.b_count * ELEM_BYTES, 16);
             this.addr_a = 40'h1000_0000;
-            this.addr_b = this.addr_a + 40'(ab_bytes) + 40'(MEM_GAP);
-            this.addr_c = this.addr_b + 40'(ab_bytes) + 40'(MEM_GAP);
+            this.addr_b = this.addr_a + 40'(a_bytes) + 40'(MEM_GAP);
+            this.addr_c = this.addr_b + 40'(b_bytes) + 40'(MEM_GAP);
+        endfunction
+
+        // 1 when c position e is produced by the kernel (inside a run's
+        // `size` elements); 0 for the alignment tail / stride gap.
+        function bit c_valid(int unsigned e);
+            if (outer <= 1 || c_inc == 0) return (e < size);
+            return ((e % c_inc) < size);
         endfunction
 
         // Load A / B / C_ref from <dir>/test_<NN>_{a,b,c}.hex.  The upstream
@@ -194,8 +215,8 @@ module vectorop_tb;
         // pushing B over AXI for unary ops to match what the kernel reads.
         function void load_fixture(string dir);
             string idx_str;
-            a_data = new[ab_count];
-            b_data = new[ab_count];
+            a_data = new[a_count];
+            b_data = new[b_count];
             c_ref  = new[c_count];
             idx_str = $sformatf("%02d", index);
             $readmemh($sformatf("%s/test_%s_a.hex", dir, idx_str), a_data);
@@ -205,9 +226,9 @@ module vectorop_tb;
 
         function string to_string();
             return $sformatf(
-                "%-16s  op=%0d(%s)  size=%0d outer=%0d  a_inc=%0d b_inc=%0d  unary=%0d  |A|=|B|=%0d |C|=%0d",
+                "%-16s  op=%0d(%s)  size=%0d outer=%0d  a_inc=%0d b_inc=%0d act=%0d  unary=%0d  |A|=%0d |B|=%0d |C|=%0d",
                 label, op, op_to_name(op), size, outer,
-                a_inc, b_inc, is_unary, ab_count, c_count);
+                a_inc, b_inc, act, is_unary, a_count, b_count, c_count);
         endfunction
     endclass
 
@@ -229,6 +250,7 @@ module vectorop_tb;
         int unsigned outer;
         int unsigned a_inc;
         int unsigned b_inc;
+        int unsigned act;
 
         // Per-test simulation timing (file-level `timescale 1ns/1ps).
         // start_ns is sampled before the driver programs registers; end_ns
@@ -322,15 +344,15 @@ module vectorop_tb;
             c_bytes = align_up(item.c_count * ELEM_BYTES, 16);
 
             $display("[%0t][DRV] Loading A   (%0d elements) ...",
-                     $time, item.ab_count);
-            write_data_ddr(item.addr_a, item.a_data, item.ab_count);
+                     $time, item.a_count);
+            write_data_ddr(item.addr_a, item.a_data, item.a_count);
 
             // Kernel issues no gmem1 AXI transactions for OP_RELU / OP_RELU6
             // (op is loop-invariant in HLS), so skip the B push for unary ops.
             if (!item.is_unary) begin
                 $display("[%0t][DRV] Loading B   (%0d elements) ...",
-                         $time, item.ab_count);
-                write_data_ddr(item.addr_b, item.b_data, item.ab_count);
+                         $time, item.b_count);
+                write_data_ddr(item.addr_b, item.b_data, item.b_count);
             end else begin
                 $display("[%0t][DRV] Skipping B push (unary op)", $time);
             end
@@ -345,8 +367,8 @@ module vectorop_tb;
             // they reset to 0 in the kernel, and outer=0 means the kernel
             // emits no writes — so they must be programmed every test even
             // when the manifest sets them all to defaults.
-            $display("[%0t][DRV] Programming registers (op=%0d outer=%0d a_inc=%0d b_inc=%0d) ...",
-                     $time, item.op, item.outer, item.a_inc, item.b_inc);
+            $display("[%0t][DRV] Programming registers (op=%0d outer=%0d a_inc=%0d b_inc=%0d act=%0d) ...",
+                     $time, item.op, item.outer, item.a_inc, item.b_inc, item.act);
             axil_write(REG_A_LO,  item.addr_a[31:0]);
             axil_write(REG_A_HI,  {24'b0, item.addr_a[39:32]});
             axil_write(REG_B_LO,  item.addr_b[31:0]);
@@ -358,6 +380,7 @@ module vectorop_tb;
             axil_write(REG_OUTER, 32'(item.outer));
             axil_write(REG_A_INC, 32'(item.a_inc));
             axil_write(REG_B_INC, 32'(item.b_inc));
+            axil_write(REG_ACT,   32'(item.act));
 
             // Enable ap_done interrupt and assert ap_start
             axil_write(REG_GIE,     32'h1);
@@ -470,6 +493,7 @@ module vectorop_tb;
             tr.outer          = item.outer;
             tr.a_inc          = item.a_inc;
             tr.b_inc          = item.b_inc;
+            tr.act            = item.act;
             tr.total_elements = total_elems;
 
             $display("[%0t][SCB] Verifying C[0..%0d] (%0d elem × %0d B = %0d B) against c_ref ...",
@@ -480,6 +504,7 @@ module vectorop_tb;
                 for (w = 0; w < CHUNK_SIZE / 2; w++) begin
                     eidx = i * (CHUNK_SIZE / 2) + w;
                     if (eidx >= total_elems) break;
+                    if (!item.c_valid(eidx)) continue;   // alignment tail / stride gap
                     elem     = chunk_buf[w*16 +: 16];
                     exp_elem = item.c_ref[eidx];
                     if (elem !== exp_elem) begin
@@ -500,6 +525,7 @@ module vectorop_tb;
                 for (w = 0; w < rem / 2; w++) begin
                     eidx = n_chunks * (CHUNK_SIZE / 2) + w;
                     if (eidx >= total_elems) break;
+                    if (!item.c_valid(eidx)) continue;   // alignment tail / stride gap
                     elem     = chunk_buf[w*16 +: 16];
                     exp_elem = item.c_ref[eidx];
                     if (elem !== exp_elem) begin
@@ -579,8 +605,8 @@ module vectorop_tb;
                 $fwrite(fd, "      \"geometry\": {\n");
                 $fwrite(fd, "        \"size\": %0d, \"op\": %0d, \"op_name\": \"%s\",\n",
                             tr.size, tr.op, op_to_name(tr.op));
-                $fwrite(fd, "        \"outer\": %0d, \"a_inc\": %0d, \"b_inc\": %0d\n",
-                            tr.outer, tr.a_inc, tr.b_inc);
+                $fwrite(fd, "        \"outer\": %0d, \"a_inc\": %0d, \"b_inc\": %0d, \"act\": %0d\n",
+                            tr.outer, tr.a_inc, tr.b_inc, tr.act);
                 $fwrite(fd, "      },\n");
                 $fwrite(fd, "      \"total_elements\":     %0d,\n",        tr.total_elements);
                 $fwrite(fd, "      \"errors\":             %0d,\n",        tr.errors);
@@ -674,20 +700,22 @@ module vectorop_tb;
         env      e;
         vop_item tests[$];
 
-        // Parse one manifest line — 6 ints + 1 trailing label token —
+        // Parse one manifest line — 7 ints + 1 trailing label token —
         // and create + load a vop_item.  Returns null if the line is
         // blank, a comment, or unparseable.  Manifest column layout
         // (matches the upstream vectorop reference dump):
         //
-        //   idx size op outer a_inc b_inc   label
+        //   idx size op outer a_inc b_inc act   label
+        //
+        // Older 6-int manifests (no act column) are accepted with act = 0.
         //
         // Per-test a / b / c arrays are loaded from
         // <data_dir>/test_<NN>_{a,b,c}.hex via $readmemh.
         function automatic vop_item parse_manifest_line(string line,
                                                          string data_dir);
             int unsigned idx;
-            int unsigned size_, op_, outer_, a_inc_, b_inc_;
-            string       label;
+            int unsigned size_, op_, outer_, a_inc_, b_inc_, act_;
+            string       label, tok7;
             int          rc;
             int          first;
             vop_item     it;
@@ -701,16 +729,27 @@ module vectorop_tb;
             if (first == line.len()) return null;
             if (line.getc(first) == "#") return null;
 
-            rc = $sscanf(line, "%d %d %d %d %d %d %s",
-                idx, size_, op_, outer_, a_inc_, b_inc_, label);
+            rc = $sscanf(line, "%d %d %d %d %d %d %s %s",
+                idx, size_, op_, outer_, a_inc_, b_inc_, tok7, label);
             if (rc < 6) begin
                 $display("[%0t][TEST] WARN: skipping unparseable manifest line: %s",
                          $time, line);
                 return null;
             end
-            if (rc < 7) label = op_to_name(op_);
+            // 7th token: the act column when numeric, else a legacy label.
+            act_ = 0;
+            if (rc >= 7) begin
+                if (tok7.len() > 0 && tok7.getc(0) >= "0" && tok7.getc(0) <= "9") begin
+                    act_ = tok7.atoi();
+                    if (rc < 8) label = op_to_name(op_);
+                end else begin
+                    label = tok7;
+                end
+            end else begin
+                label = op_to_name(op_);
+            end
 
-            it = new(idx, label, size_, op_, outer_, a_inc_, b_inc_);
+            it = new(idx, label, size_, op_, outer_, a_inc_, b_inc_, act_);
             it.load_fixture(data_dir);
             return it;
         endfunction
