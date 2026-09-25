@@ -4,7 +4,7 @@
     "xci_name": "design_matmul_MatmulKernel_0_0",
     "cell_name": "MatmulKernel_0",
     "component_reference": "xilinx.com:hls:MatmulKernel:1.0",
-    "ip_revision": "2114800667",
+    "ip_revision": "2114802044",
     "gen_directory": "../../../../../../matmul_op_test.gen/sources_1/bd/design_matmul/ip/design_matmul_MatmulKernel_0_0",
     "parameters": {
       "component_parameters": {
@@ -103,7 +103,7 @@
       },
       "runtime_parameters": {
         "IPCONTEXT": [ { "value": "IP_Integrator" } ],
-        "IPREVISION": [ { "value": "2114800667" } ],
+        "IPREVISION": [ { "value": "2114802044" } ],
         "MANAGED": [ { "value": "TRUE" } ],
         "OUTPUTDIR": [ { "value": "../../../../../../matmul_op_test.gen/sources_1/bd/design_matmul/ip/design_matmul_MatmulKernel_0_0" } ],
         "SELECTEDSIMMODEL": [ { "value": "" } ],
@@ -1006,5 +1006,5 @@
       }
     }
   },
-  "checksum": "8bd9182e"
+  "checksum": "f7e8bacb"
 }
