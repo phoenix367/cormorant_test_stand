@@ -550,13 +550,13 @@
         "PSU__USB0__PERIPHERAL__ENABLE": [ { "value": "0", "value_src": "user", "resolve_type": "user", "usage": "all" } ],
         "PSU__USB0__PERIPHERAL__IO": [ { "value": "<Select>", "resolve_type": "user", "enabled": false, "usage": "all" } ],
         "PSU__USB0__RESET__ENABLE": [ { "value": "0", "value_src": "user", "resolve_type": "user", "usage": "all" } ],
-        "PSU__USB0__RESET__IO": [ { "value": "<Select>", "resolve_type": "user", "usage": "all" } ],
+        "PSU__USB0__RESET__IO": [ { "value": "<Select>", "resolve_type": "user", "enabled": false, "usage": "all" } ],
         "PSU__USB__RESET__MODE": [ { "value": "<Select>", "resolve_type": "user", "enabled": false, "usage": "all" } ],
         "PSU__USB__RESET__POLARITY": [ { "value": "<Select>", "resolve_type": "user", "enabled": false, "usage": "all" } ],
         "PSU__USB1__PERIPHERAL__ENABLE": [ { "value": "0", "value_src": "user", "resolve_type": "user", "usage": "all" } ],
         "PSU__USB1__PERIPHERAL__IO": [ { "value": "<Select>", "resolve_type": "user", "enabled": false, "usage": "all" } ],
         "PSU__USB1__RESET__ENABLE": [ { "value": "0", "value_src": "user", "resolve_type": "user", "usage": "all" } ],
-        "PSU__USB1__RESET__IO": [ { "value": "<Select>", "resolve_type": "user", "usage": "all" } ],
+        "PSU__USB1__RESET__IO": [ { "value": "<Select>", "resolve_type": "user", "enabled": false, "usage": "all" } ],
         "PSU__USB3_0__PERIPHERAL__ENABLE": [ { "value": "0", "resolve_type": "user", "enabled": false, "usage": "all" } ],
         "PSU__USB3_0__PERIPHERAL__IO": [ { "value": "<Select>", "resolve_type": "user", "enabled": false, "usage": "all" } ],
         "PSU__USB3_1__PERIPHERAL__ENABLE": [ { "value": "0", "resolve_type": "user", "enabled": false, "usage": "all" } ],
@@ -2323,5 +2323,5 @@
       }
     }
   },
-  "checksum": "9de6e839"
+  "checksum": "14d8029e"
 }
