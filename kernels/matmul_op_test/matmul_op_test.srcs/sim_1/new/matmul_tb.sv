@@ -99,6 +99,9 @@ module matmul_tb;
     localparam integer      CHUNK_SIZE = 1024; // PS VIP transfer chunk (bytes)
     localparam integer      CHUNK_BITS = CHUNK_SIZE * 8;
     localparam int unsigned MEM_GAP    = 64 * 1024; // guard gap between arrays (bytes)
+    // kTileM of the synthesised kernel (platforms/kv260.json kernels.matmul.tile_m):
+    // the packed-B image pads m to a multiple of it (MatmulKernel.h).
+    localparam int unsigned TILE_M     = 32;
 
     localparam logic [15:0] C_POISON = 16'hDEAD; // sentinel for un-written C elements
 
@@ -179,10 +182,10 @@ module matmul_tb;
             this.a_count = (a_batch_stride_ == 0) ? (n_ * k_)
                                                   : (batch_ * a_batch_stride_);
             // Packed B (MatmulKernel.h "Packed (tile-major) B layout"): each
-            // batch slice is k x roundup(m, 16) elements; the manifest's
+            // batch slice is k x roundup(m, TILE_M) elements; the manifest's
             // b_stride is already in packed elements.
             this.b_count = (b_batch_stride_ == 0)
-                         ? (b_packed_ ? (k_ * (((m_ + 15) / 16) * 16)) : (k_ * m_))
+                         ? (b_packed_ ? (k_ * align_up(m_, TILE_M)) : (k_ * m_))
                          : (batch_ * b_batch_stride_);
             this.c_count = batch_ * n_ * m_;
 
@@ -190,7 +193,14 @@ module matmul_tb;
             a_region_bytes = align_up(this.a_count * ELEM_BYTES, 16);
             b_region_bytes = align_up(this.b_count * ELEM_BYTES, 16);
 
-            this.addr_a = 40'h1000_0000;
+            // Alternate the DDR base between consecutive tests so a test's
+            // inputs never occupy addresses the previous test's kernel
+            // wrote: the PS DDR model commits the kernel's last
+            // (partial-strobe) C write late enough to land on top of the
+            // next test's backdoor-loaded B (39-case sequence, 2026-09-25:
+            // B[49922] of test 33 read back as C[98] of test 32 on every
+            // kernel revision, never when the case ran alone).
+            this.addr_a = 40'h1000_0000 + 40'(index_ % 2) * 40'h0400_0000;
             this.addr_b = this.addr_a + 40'(a_region_bytes) + 40'(MEM_GAP);
             this.addr_c = this.addr_b + 40'(b_region_bytes) + 40'(MEM_GAP);
         endfunction
@@ -748,6 +758,7 @@ module matmul_tb;
                 $display(" Test %0d / %0d : %s", i+1, n, tests[i].to_string());
                 $display("----------------------------------------------------------");
                 e.run_one(tests[i]);
+                #(20us);   // settle (see the DDR-base note in mm_item::new)
             end
 
             e.scb.print_summary();
