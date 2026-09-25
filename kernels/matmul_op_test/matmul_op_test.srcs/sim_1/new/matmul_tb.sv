@@ -99,6 +99,9 @@ module matmul_tb;
     localparam integer      CHUNK_SIZE = 1024; // PS VIP transfer chunk (bytes)
     localparam integer      CHUNK_BITS = CHUNK_SIZE * 8;
     localparam int unsigned MEM_GAP    = 64 * 1024; // guard gap between arrays (bytes)
+    // kTileM of the synthesised kernel (platforms/kv260.json kernels.matmul.tile_m):
+    // the packed-B image pads m to a multiple of it (MatmulKernel.h).
+    localparam int unsigned TILE_M     = 32;
 
     localparam logic [15:0] C_POISON = 16'hDEAD; // sentinel for un-written C elements
 
@@ -179,10 +182,10 @@ module matmul_tb;
             this.a_count = (a_batch_stride_ == 0) ? (n_ * k_)
                                                   : (batch_ * a_batch_stride_);
             // Packed B (MatmulKernel.h "Packed (tile-major) B layout"): each
-            // batch slice is k x roundup(m, 16) elements; the manifest's
+            // batch slice is k x roundup(m, TILE_M) elements; the manifest's
             // b_stride is already in packed elements.
             this.b_count = (b_batch_stride_ == 0)
-                         ? (b_packed_ ? (k_ * (((m_ + 15) / 16) * 16)) : (k_ * m_))
+                         ? (b_packed_ ? (k_ * align_up(m_, TILE_M)) : (k_ * m_))
                          : (batch_ * b_batch_stride_);
             this.c_count = batch_ * n_ * m_;
 
