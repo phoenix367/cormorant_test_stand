@@ -190,7 +190,14 @@ module matmul_tb;
             a_region_bytes = align_up(this.a_count * ELEM_BYTES, 16);
             b_region_bytes = align_up(this.b_count * ELEM_BYTES, 16);
 
-            this.addr_a = 40'h1000_0000;
+            // Alternate the DDR base between consecutive tests so a test's
+            // inputs never occupy addresses the previous test's kernel
+            // wrote: the PS DDR model commits the kernel's last
+            // (partial-strobe) C write late enough to land on top of the
+            // next test's backdoor-loaded B (39-case sequence, 2026-09-25:
+            // B[49922] of test 33 read back as C[98] of test 32 on every
+            // kernel revision, never when the case ran alone).
+            this.addr_a = 40'h1000_0000 + 40'(index_ % 2) * 40'h0400_0000;
             this.addr_b = this.addr_a + 40'(a_region_bytes) + 40'(MEM_GAP);
             this.addr_c = this.addr_b + 40'(b_region_bytes) + 40'(MEM_GAP);
         endfunction
@@ -748,6 +755,7 @@ module matmul_tb;
                 $display(" Test %0d / %0d : %s", i+1, n, tests[i].to_string());
                 $display("----------------------------------------------------------");
                 e.run_one(tests[i]);
+                #(20us);   // settle (see the DDR-base note in mm_item::new)
             end
 
             e.scb.print_summary();
