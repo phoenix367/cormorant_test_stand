@@ -12,7 +12,9 @@
 //
 // DUT: design_pooling block design (no external ports).
 //   Zynq UltraScale+ PS VIP: AXI-Lite master HPM0_FPD + DDR slave HPC0_FPD
-//   Kernel: PoolingKernel (ap_fixed<16,8>; gmem0/x read, gmem1/y write)
+//   Kernel: PoolingKernel (ap_fixed<16,8>; gmem0/x read, gmem1/y write —
+//           both 128-bit hls::burst_maxi ports, y with byte-strobed run
+//           edges; the scoreboard also checks the poisoned y tail lanes)
 //
 // ap_fixed<16,8> encoding:
 //   real_value × 256 = raw int16
@@ -57,11 +59,9 @@
 //   0xA0 lp_order        (0xA4 reserved)
 //   0xA8 count_include_pad (0xAC reserved)
 //
-// Test matrix (19 cases):
-//   MaxPool:  degenerate, 2×2 pool stride=2, 3×3 pool, channels=4/8, batch=2,
-//             sat+, sat-, negative-x, dilation=2
-//   AvgPool:  2×2 pool stride=2, 3×3 pool stride=3, global (pool=input), negative-x
-//   LpPool:   p=1 k=1×1, p=1 k=2×2, p=2 k=1×1, p=2 k=2×2, p=1 saturation
+// Test matrix: every case of TestPoolingSim.cpp's table, dumped by
+// `make gen_pool_test_data` (43 cases as of POOL §2.14: the 31 original
+// geometries plus 12 word-tail / alignment cases).
 // ============================================================================
 
 module pooling_tb;
@@ -112,6 +112,21 @@ module pooling_tb;
     localparam int unsigned MEM_GAP    = 64 * 1024; // guard gap between arrays (bytes)
 
     localparam logic [15:0] Y_POISON = 16'hDEAD; // sentinel for unwritten y elements
+
+    // Shadow of every byte the bench or the kernel has written (byte address
+    // -> value).  The PS VIP's DDRC write path races (see ddrc_wr_fix below)
+    // and can deposit STALE data in the bytes a partial-strobe beat leaves
+    // unstrobed (observed with the 128-bit conv y port, CONV §2.38).  The
+    // pool y port is 128-bit with byte-strobed run edges too (POOL §2.14);
+    // ddrc_wr_fix restores unstrobed bytes from this shadow, so the y tail
+    // pad check in the scoreboard is a genuine test of the kernel's WSTRB.
+    logic [7:0] shadow_mem [longint unsigned];
+
+    function automatic void shadow_store(input [39:0] base, input int unsigned nbytes,
+                                         input logic [CHUNK_BITS-1:0] buf_mem);
+        for (int unsigned b = 0; b < nbytes; b++)
+            shadow_mem[longint'(base) + b] = buf_mem[b*8 +: 8];
+    endfunction
 
     // Kernel interrupt wire.
     wire kernel_irq = dut.PoolingKernel_0_interrupt;
@@ -293,10 +308,14 @@ module pooling_tb;
                 buf_mem[i*16 +: 16] = val;
             n_chunks = nbytes / CHUNK_SIZE;
             rem      = nbytes % CHUNK_SIZE;
-            for (i = 0; i < n_chunks; i++)
+            for (i = 0; i < n_chunks; i++) begin
                 `PS.write_mem(buf_mem, base + 40'(i * CHUNK_SIZE), CHUNK_SIZE);
-            if (rem > 0)
+                shadow_store(base + 40'(i * CHUNK_SIZE), CHUNK_SIZE, buf_mem);
+            end
+            if (rem > 0) begin
                 `PS.write_mem(buf_mem, base + 40'(n_chunks * CHUNK_SIZE), rem);
+                shadow_store(base + 40'(n_chunks * CHUNK_SIZE), rem, buf_mem);
+            end
         endtask
 
         // Write a 16-bit data array to DDR starting at base, in CHUNK_SIZE
@@ -321,6 +340,7 @@ module pooling_tb;
                         buf_mem[i*16 +: 16] = data[idx];
                 end
                 `PS.write_mem(buf_mem, base + 40'(c * CHUNK_SIZE), CHUNK_SIZE);
+                shadow_store(base + 40'(c * CHUNK_SIZE), CHUNK_SIZE, buf_mem);
             end
             if (rem > 0) begin
                 buf_mem = '0;
@@ -330,6 +350,7 @@ module pooling_tb;
                         buf_mem[i*16 +: 16] = data[idx];
                 end
                 `PS.write_mem(buf_mem, base + 40'(n_chunks * CHUNK_SIZE), rem);
+                shadow_store(base + 40'(n_chunks * CHUNK_SIZE), rem, buf_mem);
             end
         endtask
 
@@ -534,6 +555,39 @@ module pooling_tb;
                             tr.mm_exp.push_back(exp);
                         end
                         errors++;
+                    end
+                end
+            end
+
+            // POOL §2.14: y is written through a 128-bit port with byte
+            // strobes at every run's first / last word.  The lanes between
+            // y_count and the 16-byte-aligned end of the y region were
+            // poisoned before the run and are never part of the tensor; if
+            // the kernel's tail strobe were wrong they would be overwritten.
+            begin
+                int unsigned pad_base, pad_len;
+                logic [CHUNK_BITS-1:0] pad_buf;
+                // read_mem must start on a 16-byte beat (an 8-byte-aligned
+                // start silently returned the beat below): read the whole
+                // last beat and skip its in-tensor elements.
+                pad_base = n_bytes & ~32'hF;
+                pad_len  = align_up(n_bytes, 16) - pad_base;
+                if (pad_len > 0) begin
+                    `PS.read_mem(item.addr_y + 40'(pad_base), pad_len, pad_buf);
+                    for (w = 0; w < pad_len / 2; w++) begin
+                        eidx = pad_base / 2 + w;
+                        if (eidx < total_elems) continue;
+                        elem = pad_buf[w*16 +: 16];
+                        if (elem !== Y_POISON) begin
+                            $display("[%0t][SCB] TAIL PAD CLOBBERED y[%0d] (past y_count): got=0x%04h  exp=0x%04h",
+                                     $time, eidx, elem, Y_POISON);
+                            if (errors < MAX_MM) begin
+                                tr.mm_idx.push_back(eidx);
+                                tr.mm_got.push_back(elem);
+                                tr.mm_exp.push_back(Y_POISON);
+                            end
+                            errors++;
+                        end
                     end
                 end
             end
@@ -849,11 +903,21 @@ module pooling_tb;
             #1;
             nb = int'(dut.zynq_ultra_ps_e_0.inst.ddrc.wr_bytes);
             for (int b = 0; b < nb; b++) begin
+                ba = dut.zynq_ultra_ps_e_0.inst.ddrc.wr_addr + 40'(b);
                 if (dut.zynq_ultra_ps_e_0.inst.ddrc.wr_strb[b]) begin
-                    ba   = dut.zynq_ultra_ps_e_0.inst.ddrc.wr_addr + 40'(b);
+                    bd = dut.zynq_ultra_ps_e_0.inst.ddrc.wr_data[b*8 +: 8];
+                    shadow_mem[longint'(ba)] = bd;
+                end else if (shadow_mem.exists(longint'(ba))) begin
+                    // Unstrobed byte: undo whatever the VIP's racing write
+                    // deposited by restoring the last value this bench or a
+                    // strobed beat wrote there.
+                    bd = shadow_mem[longint'(ba)];
+                end else begin
+                    continue;
+                end
+                begin
                     wa   = ba[33:2];
                     boff = int'(ba[1:0]);
-                    bd   = dut.zynq_ultra_ps_e_0.inst.ddrc.wr_data[b*8 +: 8];
                     if (wa[28] == 1'b0) begin
                         tmp_word = dut.zynq_ultra_ps_e_0.inst.ddrc.ddr.ddr_mem0[wa[27:0]];
                         tmp_word[boff*8 +: 8] = bd;
