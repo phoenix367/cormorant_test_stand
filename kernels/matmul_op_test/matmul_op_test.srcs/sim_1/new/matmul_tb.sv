@@ -91,6 +91,9 @@ module matmul_tb;
     localparam [39:0] REG_B_BATCH_STRIDE = CTRL_BASE + 40'h5C;
     localparam [39:0] REG_C_BATCH_STRIDE = CTRL_BASE + 40'h64;
     localparam [39:0] REG_B_PACKED       = CTRL_BASE + 40'h6C;   // 0: row-major B, 1: tile-major packed B
+    localparam [39:0] REG_GEMV_KW        = CTRL_BASE + 40'h74;   // 0: tiled path, 1/2/4/8: GEMV streaming
+    localparam [39:0] REG_A_TO_B_LO      = CTRL_BASE + 40'h7C;   // GEMV: address of b minus address of a
+    localparam [39:0] REG_A_TO_B_HI      = CTRL_BASE + 40'h80;
 
     // -----------------------------------------------------------------------
     // Testbench parameters
@@ -134,6 +137,7 @@ module matmul_tb;
         int unsigned a_batch_stride; // 0 = broadcast A across batches
         int unsigned b_batch_stride; // 0 = broadcast B across batches
         int unsigned b_packed;       // 0: row-major, 1: tile-major packed (manifest col 8)
+        int unsigned gemv_kw;        // 0: tiled path, 1/2/4/8: GEMV image kernel width (col 9)
         int unsigned c_batch_stride; // always = n × m  (derived, not in manifest)
 
         // Element counts (derived from dims + stride mode).
@@ -159,7 +163,8 @@ module matmul_tb;
                      int unsigned   batch_,
                      int unsigned   a_batch_stride_,
                      int unsigned   b_batch_stride_,
-                     int unsigned   b_packed_ = 0);
+                     int unsigned   b_packed_ = 0,
+                     int unsigned   gemv_kw_  = 0);
             int unsigned a_region_bytes, b_region_bytes;
 
             this.index          = index_;
@@ -171,6 +176,7 @@ module matmul_tb;
             this.a_batch_stride = a_batch_stride_;
             this.b_batch_stride = b_batch_stride_;
             this.b_packed       = b_packed_;
+            this.gemv_kw        = gemv_kw_;   // GEMV image: k x m per slice, like row-major B
             this.c_batch_stride = n_ * m_;
 
             // Element counts.
@@ -221,9 +227,9 @@ module matmul_tb;
 
         function string to_string();
             return $sformatf(
-                "%-32s  N=%0d K=%0d M=%0d  batch=%0d  a_stride=%0d b_stride=%0d  |A|=%0d |B|=%0d |C|=%0d",
+                "%-32s  N=%0d K=%0d M=%0d  batch=%0d  a_stride=%0d b_stride=%0d  gemv_kw=%0d  |A|=%0d |B|=%0d |C|=%0d",
                 label, n, k, m, batch,
-                a_batch_stride, b_batch_stride,
+                a_batch_stride, b_batch_stride, gemv_kw,
                 a_count, b_count, c_count);
         endfunction
     endclass
@@ -330,6 +336,7 @@ module matmul_tb;
 
         task run(mm_item item);
             int unsigned c_total_bytes;
+            logic [63:0] a_to_b;
             $display("[%0t][DRV] %s", $time, item.to_string());
 
             c_total_bytes = align_up(item.c_count * ELEM_BYTES, 16);
@@ -363,6 +370,13 @@ module matmul_tb;
             axil_write(REG_B_BATCH_STRIDE, 32'(item.b_batch_stride));
             axil_write(REG_C_BATCH_STRIDE, 32'(item.c_batch_stride));
             axil_write(REG_B_PACKED,       32'(item.b_packed));
+            // GEMV (MatmulKernel.h "GEMV streaming mode"): port a reaches its
+            // half of B at a_to_b bytes.  Written for every case — the
+            // registers keep their value across calls.
+            a_to_b = 64'(item.addr_b) - 64'(item.addr_a);
+            axil_write(REG_GEMV_KW,        32'(item.gemv_kw));
+            axil_write(REG_A_TO_B_LO,      a_to_b[31:0]);
+            axil_write(REG_A_TO_B_HI,      a_to_b[63:32]);
 
             // Enable ap_done interrupt and assert ap_start.
             axil_write(REG_GIE,     32'h1);
@@ -665,22 +679,33 @@ module matmul_tb;
         env     e;
         mm_item tests[$];
 
-        // Parse one manifest line — 8 ints + 1 trailing label token —
+        // Parse one manifest line — 8 or 9 ints + 1 trailing label token —
         // and create + load an mm_item.  Returns null if the line is
         // blank, a comment, or unparseable.  Manifest column layout
         // (matches the upstream matmul reference dump):
         //
-        //   idx n k m batch a_stride b_stride b_packed   label
+        //   idx n k m batch a_stride b_stride b_packed gemv_kw   label
+        //
+        // gemv_kw is present when the header comment names it (dumps since
+        // the GEMV streaming mode); older manifests have 8 ints.
         //
         // a_stride / b_stride are per-batch element counts.  A value of
         // 0 means "broadcast that operand across batches" (single matrix
         // in DDR).  Per-test a/b/c arrays are loaded from
         // <data_dir>/test_<NN>_{a,b,c}.hex via $readmemh.
+        // Does `s` contain `sub`?
+        function automatic bit str_contains(string s, string sub);
+            for (int i = 0; i + sub.len() <= s.len(); i++)
+                if (s.substr(i, i + sub.len() - 1) == sub) return 1;
+            return 0;
+        endfunction
+
         function automatic mm_item parse_manifest_line(string line,
-                                                        string data_dir);
+                                                        string data_dir,
+                                                        bit    has_gemv);
             int unsigned idx;
             int unsigned n_, k_, m_, batch_;
-            int unsigned a_stride, b_stride, b_packed;
+            int unsigned a_stride, b_stride, b_packed, gemv_kw;
             string       label;
             int          rc;
             int          first;
@@ -695,8 +720,14 @@ module matmul_tb;
             if (first == line.len()) return null;
             if (line.getc(first) == "#") return null;
 
-            rc = $sscanf(line, "%d %d %d %d %d %d %d %d %s",
-                idx, n_, k_, m_, batch_, a_stride, b_stride, b_packed, label);
+            gemv_kw = 0;
+            if (has_gemv) begin
+                rc = $sscanf(line, "%d %d %d %d %d %d %d %d %d %s",
+                    idx, n_, k_, m_, batch_, a_stride, b_stride, b_packed, gemv_kw, label);
+                rc = rc - 1;                 // count as the 8-int layout below
+            end else
+                rc = $sscanf(line, "%d %d %d %d %d %d %d %d %s",
+                    idx, n_, k_, m_, batch_, a_stride, b_stride, b_packed, label);
             if (rc < 8) begin
                 $display("[%0t][TEST] WARN: skipping unparseable manifest line: %s",
                          $time, line);
@@ -704,7 +735,7 @@ module matmul_tb;
             end
             if (rc < 9) label = "(unlabelled)";
 
-            it = new(idx, label, n_, k_, m_, batch_, a_stride, b_stride, b_packed);
+            it = new(idx, label, n_, k_, m_, batch_, a_stride, b_stride, b_packed, gemv_kw);
             it.load_fixture(data_dir);
             return it;
         endfunction
@@ -717,6 +748,7 @@ module matmul_tb;
             string       line;
             int unsigned n;
             mm_item      it;
+            bit          has_gemv;
 
             if (!$value$plusargs("DATA_DIR=%s", data_dir))
                 data_dir = "matmul_test_data";
@@ -735,12 +767,16 @@ module matmul_tb;
             $display(" MatmulKernel Testbench   data dir = %s", data_dir);
             $display("==========================================================");
 
-            // Pre-build all test items so we know the count up front.
+            // Pre-build all test items so we know the count up front.  The
+            // header comment of a manifest with the gemv_kw column names it.
+            has_gemv = 0;
             while (!$feof(fd)) begin
                 line = "";
                 rc   = $fgets(line, fd);
                 if (rc == 0) break;
-                it = parse_manifest_line(line, data_dir);
+                if (line.len() > 0 && line.getc(0) == "#" && str_contains(line, "gemv_kw"))
+                    has_gemv = 1;
+                it = parse_manifest_line(line, data_dir, has_gemv);
                 if (it != null) tests.push_back(it);
             end
             $fclose(fd);
