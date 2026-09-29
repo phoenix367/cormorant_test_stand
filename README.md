@@ -156,7 +156,7 @@ so the report deliberately lands next to the project, not next to the
 inputs. `run_tb.sh` parses it at the end and prints a one-line summary:
 
 ```
-[ts] kernel=ConvKernel  total=18  passed=18  failed=0  all_passed=True
+[ts] kernel=ConvKernel  total=63  passed=63  failed=0  all_passed=True
 ```
 
 The wrapper exits non-zero if `all_passed` is false, so it composes cleanly
