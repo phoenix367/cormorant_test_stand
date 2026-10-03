@@ -37,7 +37,7 @@ up automatically on the next run.
 | `scripts/lib.sh` | Sourced by every wrapper. Owns Vivado discovery (`ensure_vivado`) and registry lookup (`kernel_field`, `kernel_xpr_path`). |
 | `scripts/build_hw.sh` + `scripts/tcl/build_hw.tcl` | Synthesis + implementation + bitstream. The shell wrapper handles flag parsing and Vivado discovery, the Tcl handles `open_project` / `ts_apply_ip_repo` / `ts_prepare_bd` / `reset_run` / `launch_runs`. |
 | `scripts/run_tb.sh` + `scripts/tcl/run_sim.tcl` | xsim batch run. Requires `--data-dir`, validates the directory contains `manifest.txt`, applies the optional `--ip-repo` override, refreshes locked IPs + BD wrapper, then passes `+DATA_DIR=<abs>` and `+REPORT=<file>` plusargs to the testbench. Parses the JSON report and prints a PASS/FAIL line. |
-| `scripts/tcl/lib.tcl` | Shared Tcl helpers: `ts_apply_ip_repo` (override `ip_repo_paths` + `update_ip_catalog -rebuild`) and `ts_prepare_bd` (`upgrade_ip` locked IPs, `generate_target all`, regenerate BD wrapper). Sourced by both Tcl drivers. |
+| `scripts/tcl/lib.tcl` | Shared Tcl helpers: `ts_apply_ip_repo` (override `ip_repo_paths` + `update_ip_catalog -rebuild`), `ts_apply_ip_default_widths` (every kernel instance's `C_M_AXI_*_DATA_WIDTH` = the default of its IP, read from a temporary instance) and `ts_prepare_bd` (`upgrade_ip` locked IPs, the width reset, `generate_target all`, regenerate BD wrapper). Sourced by both Tcl drivers. |
 | `scripts/clean.sh` | Removes `<proj>.{cache,gen,hw,ip_user_files,runs,sim}` plus stray logs. Does not touch fixtures (they're not this repo's concern). |
 | `kernels/conv_test/` | Vivado project. `design_conv` block design has the PS VIP + ConvKernel IP; `conv_test.srcs/sim_1/new/conv_tb.sv` is the OOP testbench. |
 
@@ -90,6 +90,12 @@ make all-hw
   this exists to prevent. If `--ip-repo` is supplied, `ts_apply_ip_repo`
   swaps the catalogue path before the lock-check so you can repoint at a
   fresh artefact directory without editing the project file.
+- **Instance widths follow the IP.** After the upgrade `ts_prepare_bd` puts
+  every kernel instance's m_axi data widths back to the IP's defaults
+  (`ts_apply_ip_default_widths`; a no-op when they agree).  It matters for
+  MatmulKernel: the HLS export has a 32-bit gmem2, the parent repo's RTL
+  kernel (`kernels/matmul_rtl`, same VLNV) a 128-bit one, and `upgrade_ip`
+  keeps the instance's old value.
 - **Vivado batch invocations.** `vivado -mode batch -nojournal -nolog
   -source <tcl> -tclargs ...`. Don't add `-notrace`, `-stack`, etc. without
   a reason — the wrappers stay simple on purpose.

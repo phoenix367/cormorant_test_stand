@@ -24,7 +24,12 @@ references) is also external. Repoint it per-run with `--ip-repo` /
 without editing the project file. Whether or not the override is supplied,
 both `build_hw.sh` and `run_tb.sh` upgrade any locked IPs and regenerate the
 BD wrapper before launching synth or simulation, so the test always reflects
-the current kernel revision.
+the current kernel revision.  After the upgrade they put every kernel
+instance's `C_M_AXI_*_DATA_WIDTH` back to the default of the IP now in the
+catalogue (`ts_apply_ip_default_widths`): two IPs share the MatmulKernel VLNV
+— the Vitis HLS export (gmem2 32 bits) and the parent repo's SystemVerilog
+kernel (`kernels/matmul_rtl`, gmem2 128 bits) — and an upgrade keeps the
+instance's old value.
 
 ## Related project
 

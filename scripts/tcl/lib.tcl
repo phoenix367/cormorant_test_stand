@@ -31,12 +31,66 @@ proc ts_apply_ip_repo {ip_repo} {
 }
 
 # ---------------------------------------------------------------------------
+# ts_apply_ip_default_widths — every C_M_AXI_*_DATA_WIDTH of every
+# xilinx.com:hls:* cell back to the default of the IP now in the catalog.
+#
+# A kernel instance's m_axi widths must equal its IP's defaults, and two IPs
+# share the MatmulKernel VLNV: the Vitis HLS export has a 32-bit gmem2, the
+# RTL kernel (axi_demo kernels/matmul_rtl) a 128-bit one.  An upgrade from
+# one to the other keeps the instance's old value; this puts it back to the
+# new IP's default (a no-op when they agree).  Vivado has no reset to
+# default (reset_property refuses CONFIG.*, VALUE_SRC DEFAULT keeps the
+# value), so the defaults are read from a temporary instance of each IP.
+# ---------------------------------------------------------------------------
+proc ts_ip_default_widths {vlnv} {
+    set probe [create_bd_cell -type ip -vlnv $vlnv ip_default_probe]
+    set widths {}
+    foreach p [list_property $probe -regexp {^CONFIG\.C_M_AXI_\w+_DATA_WIDTH$}] {
+        dict set widths $p [get_property $p $probe]
+    }
+    delete_bd_objs $probe
+    return $widths
+}
+
+proc ts_apply_ip_default_widths {bd_file} {
+    open_bd_design $bd_file
+    set defaults {}
+    set changed 0
+    foreach cell [get_bd_cells -quiet -filter {VLNV =~ "xilinx.com:hls:*"}] {
+        set vlnv [get_property VLNV $cell]
+        if {![dict exists $defaults $vlnv]} {
+            dict set defaults $vlnv [ts_ip_default_widths $vlnv]
+        }
+        dict for {p want} [dict get $defaults $vlnv] {
+            set have [get_property $p $cell]
+            if {$have eq $want} {
+                continue
+            }
+            set_property $p $want $cell
+            set have [get_property $p $cell]
+            if {$have ne $want} {
+                error "ts_apply_ip_default_widths: $cell $p stays $have, the IP default is $want"
+            }
+            puts "\[ts\] $cell: [string range $p 7 end] -> $want (the IP default)"
+            incr changed
+        }
+    }
+    puts "\[ts\] m_axi widths: [dict size $defaults] kernel IP(s) checked, $changed instance parameter(s) reset"
+    if {$changed > 0} {
+        validate_bd_design
+    }
+    save_bd_design
+}
+
+# ---------------------------------------------------------------------------
 # ts_prepare_bd — make sure the block design's HDL targets and wrapper are
 # in sync with the IP catalog before synth/sim runs.  This is the place
 # where stale kernel IPs are detected and upgraded.
 #
 #   1. Any IP whose stored XCI is older than the catalog is reported as
-#      LOCKED — running upgrade_ip rebuilds the XCI from the new source.
+#      LOCKED — running upgrade_ip rebuilds the XCI from the new source;
+#      then the kernel instances' m_axi widths are put back to the IPs'
+#      defaults (ts_apply_ip_default_widths).
 #   2. generate_target rebuilds the BD's HDL output (.gen/<bd>/...).  Safe
 #      to run on an already-up-to-date tree (it's a no-op then).
 #   3. make_wrapper rewrites design_<k>_wrapper.v at the project's current
@@ -108,6 +162,7 @@ proc ts_prepare_bd {wrapper_top} {
         return
     }
     set bd_file [lindex $bd_files 0]
+    ts_apply_ip_default_widths $bd_file
     puts "\[ts\] Generating BD targets: [file tail $bd_file]"
     generate_target all $bd_file
 
