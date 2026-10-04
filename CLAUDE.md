@@ -5,9 +5,9 @@ Guidance for Claude Code when working in this repository.
 ## What this repo is
 
 `cormorant_test_stand` is a small set of Vivado projects and shell/Tcl drivers
-that exercise the HLS kernels. Each kernel under test lives in its own Vivado project — currently
-`kernels/conv_test/`, with `matmul_test/`, `pool_test/`, `vectorop_test/`
-expected to follow — and is driven by an OOP SystemVerilog testbench that
+that exercise the kernels. Each kernel under test lives in its own Vivado project —
+`kernels/conv_test/`, `pooling_test/`, `matmul_op_test/`, `vector_op_test/`
+— and is driven by an OOP SystemVerilog testbench that
 programs registers through a Zynq UltraScale+ PS VIP and back-door reads the
 output buffer from the simulated DDR slave.
 
@@ -40,6 +40,7 @@ up automatically on the next run.
 | `scripts/tcl/lib.tcl` | Shared Tcl helpers: `ts_apply_ip_repo` (override `ip_repo_paths` + `update_ip_catalog -rebuild`), `ts_apply_ip_default_widths` (every kernel instance's `C_M_AXI_*_DATA_WIDTH` = the default of its IP, read from a temporary instance) and `ts_prepare_bd` (`upgrade_ip` locked IPs, the width reset, `generate_target all`, regenerate BD wrapper). Sourced by both Tcl drivers. |
 | `scripts/clean.sh` | Removes `<proj>.{cache,gen,hw,ip_user_files,runs,sim}` plus stray logs. Does not touch fixtures (they're not this repo's concern). |
 | `kernels/conv_test/` | Vivado project. `design_conv` block design has the PS VIP + ConvKernel IP; `conv_test.srcs/sim_1/new/conv_tb.sv` is the OOP testbench. |
+| `kernels/{pooling,matmul_op,vector_op}_test/` | Same layout for PoolingKernel (`design_pooling`, `pooling_tb`), MatmulKernel (`design_matmul`, `matmul_tb`), VectorOPKernel (`design_vectorop`, `vectorop_tb`). |
 
 ## Common workflows
 
@@ -53,8 +54,8 @@ make hw-conv
 # Iterate on RTL/IP
 make clean-conv && make hw-conv
 
-# Run everything once more kernels are registered (each kernel gets its own dir)
-make all-tb DATA_DIR_conv=... DATA_DIR_matmul=...
+# Run every registered kernel (each kernel gets its own dir)
+make all-tb DATA_DIR_conv=... DATA_DIR_matmul_op=...
 make all-hw
 ```
 
@@ -99,8 +100,8 @@ make all-hw
 - **Vivado batch invocations.** `vivado -mode batch -nojournal -nolog
   -source <tcl> -tclargs ...`. Don't add `-notrace`, `-stack`, etc. without
   a reason — the wrappers stay simple on purpose.
-- **Per-project working directory.** Both Tcl drivers `cd` to
-  `$(dirname xpr)` before opening so any `$PPRDIR`-based paths inside the
+- **Per-project working directory.** Both shell wrappers `cd` to
+  `$(dirname xpr)` before invoking Vivado so any `$PPRDIR`-based paths inside the
   `.xpr` (notably the IP repo path the project references) resolve the way
   Vivado saved them.
 

@@ -1,6 +1,6 @@
 # cormorant_test_stand
 
-Vivado test harnesses for the four HLS kernels of the
+Vivado test harnesses for the four kernels of the
 [**Cormorant** FPGA neural-network inference accelerator](https://github.com/GradeBuilderSL/cormorant) —
 `ConvKernel`, `PoolingKernel`, `MatmulKernel`, and `VectorOPKernel`.
 Each kernel sits in its own Vivado project under `kernels/<name>_test/` with
@@ -39,11 +39,13 @@ generators all live in the parent
 This test stand consumes two of cormorant's outputs:
 
 - **HLS IP catalogues** — produced by cormorant's `make synthesize_<k>_kv260`
-  targets at `cormorant/build/kernels/<k>/kv260/<k>_kv260/`. Pass the
+  targets under `cormorant/build/kernels/<k>/kv260/` (MatmulKernel: the
+  SystemVerilog IP, `make package_matmul_rtl`, at
+  `cormorant/build/rtl_ip/MatmulKernel_ip/`). Pass the
   matching directory with `IP_REPO_<k>=` (see Quick start below).
 - **Behavioural test fixtures** (`manifest.txt` + per-test `.hex` files) —
-  produced by cormorant's `make gen_<k>_test_data` targets and emitted under
-  `cormorant/hw/test_data/<dir>/`:
+  produced by cormorant's `make gen_<k>_test_data` targets (into its build
+  tree) and checked in under `cormorant/hw/test_data/<dir>/`:
 
   | `<k>`       | Fixture target          | Default fixture directory                      |
   |-------------|-------------------------|------------------------------------------------|
@@ -62,8 +64,8 @@ This test stand consumes two of cormorant's outputs:
 |-------|-------------------------------|---------------------------|----------------|----------------------------|------------------------------------|
 | `conv`      | `kernels/conv_test/`      | `design_conv_wrapper`     | `conv_tb`      | 18 ints + label            | `test_NN_{x,w,b,y}.hex`            |
 | `pooling`   | `kernels/pooling_test/`   | `design_pooling_wrapper`  | `pooling_tb`   | 18 ints + label            | `test_NN_{x,y}.hex`                |
-| `matmul_op` | `kernels/matmul_op_test/` | `design_matmul_wrapper`   | `matmul_tb`    |  7 ints + label            | `test_NN_{a,b,c}.hex`              |
-| `vector_op` | `kernels/vector_op_test/` | `design_vectorop_wrapper` | `vectorop_tb`  |  6 ints + label            | `test_NN_{a,b,c}.hex`              |
+| `matmul_op` | `kernels/matmul_op_test/` | `design_matmul_wrapper`   | `matmul_tb`    |  9 ints + label            | `test_NN_{a,b,c}.hex`              |
+| `vector_op` | `kernels/vector_op_test/` | `design_vectorop_wrapper` | `vectorop_tb`  |  7 ints + label            | `test_NN_{a,b,c}.hex`              |
 
 `make list` reflects this table at run time. The exact column layout per
 manifest is documented in each testbench's `parse_manifest_line` function.
