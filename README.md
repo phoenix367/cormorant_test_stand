@@ -22,7 +22,9 @@ The kernel's HLS IP catalogue (the directory the .xpr's `ip_repo_paths`
 references) is also external. Repoint it per-run with `--ip-repo` /
 `IP_REPO_<k>=` so the test stand picks up freshly-rebuilt kernel sources
 without editing the project file. Whether or not the override is supplied,
-both `build_hw.sh` and `run_tb.sh` upgrade any locked IPs and regenerate the
+both `build_hw.sh` and `run_tb.sh` upgrade any locked IPs (an interconnect's
+crossbar included; a design still locked after the upgrade gets one reopen of
+the project and a second upgrade) and regenerate the
 BD wrapper before launching synth or simulation, so the test always reflects
 the current kernel revision.  After the upgrade they put every kernel
 instance's `C_M_AXI_*_DATA_WIDTH` back to the default of the IP now in the
@@ -249,11 +251,14 @@ parameters), two things have to be in sync after the IP repo is updated:
 
 ## Troubleshooting
 
-**`[ts] ERROR: IP(s) still locked after upgrade_ip`** — the .xpr's stored
+**`[ts] ERROR: still locked after upgrade_ip and a reopen`** — the .xpr's stored
 `ip_repo_paths` doesn't reach a catalogue that contains the kernel IP at the
 version the .xci references. Re-run with `IP_REPO_<k>=/path/to/kernels/build`
 (or `--ip-repo` for the bare wrapper). The error message prints the current
-`ip_repo_paths` and the locked IP's VLNV to help locate the right directory.
+`ip_repo_paths` and each locked IP's VLNV and `LOCK_DETAILS` to help locate the
+right directory.  (A locked IP inside an interconnect — e.g.
+`design_<k>_axi_interconnect_0_imp_xbar_0` after pulling a block-design change
+over old generated outputs — is upgraded too, and cleared by the reopen.)
 
 **Kernel completes (`ap_done` fires) but the output buffer keeps the poison
 value** — usually a runtime parameter the kernel reads is zero. Check that

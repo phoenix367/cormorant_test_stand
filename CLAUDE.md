@@ -24,7 +24,9 @@ its own fixtures directory; this repo never auto-locates or generates them.
 The kernel's HLS IP catalogue is also external. The `--ip-repo` /
 `IP_REPO_<k>` knob overrides the path stored in the .xpr; whether or not
 it's set, both `build_hw.sh` and `run_tb.sh` always run the shared
-`ts_prepare_bd` proc — it `upgrade_ip`s any locked IPs and regenerates the
+`ts_prepare_bd` proc — it `upgrade_ip`s any locked IPs (sub-cores included,
+`get_ips -all`; a design still locked gets one reopen of the project and a
+second upgrade) and regenerates the
 BD wrapper, so a kernel that was rebuilt outside the test stand is picked
 up automatically on the next run.
 
@@ -37,7 +39,7 @@ up automatically on the next run.
 | `scripts/lib.sh` | Sourced by every wrapper. Owns Vivado discovery (`ensure_vivado`) and registry lookup (`kernel_field`, `kernel_xpr_path`). |
 | `scripts/build_hw.sh` + `scripts/tcl/build_hw.tcl` | Synthesis + implementation + bitstream. The shell wrapper handles flag parsing and Vivado discovery, the Tcl handles `open_project` / `ts_apply_ip_repo` / `ts_prepare_bd` / `reset_run` / `launch_runs`. |
 | `scripts/run_tb.sh` + `scripts/tcl/run_sim.tcl` | xsim batch run. Requires `--data-dir`, validates the directory contains `manifest.txt`, applies the optional `--ip-repo` override, refreshes locked IPs + BD wrapper, then passes `+DATA_DIR=<abs>` and `+REPORT=<file>` plusargs to the testbench. Parses the JSON report and prints a PASS/FAIL line. |
-| `scripts/tcl/lib.tcl` | Shared Tcl helpers: `ts_apply_ip_repo` (override `ip_repo_paths` + `update_ip_catalog -rebuild`), `ts_apply_ip_default_widths` (every kernel instance's `C_M_AXI_*_DATA_WIDTH` = the default of its IP, read from a temporary instance) and `ts_prepare_bd` (`upgrade_ip` locked IPs, the width reset, `generate_target all`, regenerate BD wrapper). Sourced by both Tcl drivers. |
+| `scripts/tcl/lib.tcl` | Shared Tcl helpers: `ts_apply_ip_repo` (override `ip_repo_paths` + `update_ip_catalog -rebuild`), `ts_apply_ip_default_widths` (every kernel instance's `C_M_AXI_*_DATA_WIDTH` = the default of its IP, read from a temporary instance) and `ts_prepare_bd` (`upgrade_ip` locked IPs — `ts_locked_ips` = `get_ips -all`, so an interconnect's crossbar counts; still locked → `ts_reopen_project` and a second upgrade — the width reset, `generate_target all`, regenerate BD wrapper). Sourced by both Tcl drivers. |
 | `scripts/clean.sh` | Removes `<proj>.{cache,gen,hw,ip_user_files,runs,sim}` plus stray logs. Does not touch fixtures (they're not this repo's concern). |
 | `kernels/conv_test/` | Vivado project. `design_conv` block design has the PS VIP + ConvKernel IP; `conv_test.srcs/sim_1/new/conv_tb.sv` is the OOP testbench. |
 | `kernels/{pooling,matmul_op,vector_op}_test/` | Same layout for PoolingKernel (`design_pooling`, `pooling_tb`), MatmulKernel (`design_matmul`, `matmul_tb`), VectorOPKernel (`design_vectorop`, `vectorop_tb`). |
@@ -86,7 +88,11 @@ make all-hw
 - **Always refresh locked IPs.** Kernel sources are rebuilt outside this
   repo, so the .xpr's cached XCI can drift behind the catalogue between
   runs. `ts_prepare_bd` runs unconditionally on every build/sim and calls
-  `upgrade_ip` on any IP marked `IS_LOCKED == 1`. Never short-circuit it —
+  `upgrade_ip` on any IP marked `IS_LOCKED == 1`, sub-cores included
+  (`get_ips -all`: plain `get_ips` misses an interconnect's crossbar, and a
+  locked crossbar fails `make_wrapper` with "BD is locked").  A design still
+  locked after the upgrade gets one reopen of the project (the new session
+  reads the upgraded BD) and a second upgrade before the error. Never short-circuit it —
   the next run silently using a stale kernel is exactly the failure mode
   this exists to prevent. If `--ip-repo` is supplied, `ts_apply_ip_repo`
   swaps the catalogue path before the lock-check so you can repoint at a

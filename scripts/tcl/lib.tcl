@@ -83,14 +83,67 @@ proc ts_apply_ip_default_widths {bd_file} {
 }
 
 # ---------------------------------------------------------------------------
+# Locked IPs, the sub-cores of hierarchical IPs included: plain get_ips lists
+# only the block design's top-level cells, not e.g. an AXI Interconnect's
+# crossbar (design_<k>_axi_interconnect_0_imp_xbar_0), and a locked sub-core
+# locks the whole BD.
+# ---------------------------------------------------------------------------
+proc ts_locked_ips {} {
+    return [get_ips -all -quiet -filter {IS_LOCKED == 1}]
+}
+
+proc ts_bd_locked {} {
+    if {[llength [ts_locked_ips]] > 0} {
+        return 1
+    }
+    foreach bd [get_files -quiet -of_objects [get_filesets sources_1] \
+                    -filter {FILE_TYPE == "Block Designs"}] {
+        if {[get_property IS_LOCKED $bd]} {
+            return 1
+        }
+    }
+    return 0
+}
+
+proc ts_upgrade_locked_ips {} {
+    set locked [ts_locked_ips]
+    if {[llength $locked] == 0} {
+        return 0
+    }
+    set names {}
+    foreach ip $locked { lappend names [get_property NAME $ip] }
+    puts "\[ts\] Upgrading [llength $locked] locked IP(s): [join $names {, }]"
+    if {[catch {upgrade_ip $locked} err]} {
+        puts "\[ts\] upgrade_ip: $err"
+    }
+    return [llength $locked]
+}
+
+# Close and reopen the current project: a new session reads the block design
+# the upgrade saved.  On 2026-10-04 a working copy whose generated outputs
+# predated the committed BD had its kernel, PS and crossbar locked; after
+# upgrade_ip the crossbar stayed locked in that session (make_wrapper: "BD is
+# locked"), while the next session found nothing locked.  ip_repo_paths set
+# by ts_apply_ip_repo is stored in the .xpr, so it survives.
+proc ts_reopen_project {} {
+    set xpr [file join [get_property DIRECTORY [current_project]] \
+                 "[get_property NAME [current_project]].xpr"]
+    puts "\[ts\] Reopening $xpr"
+    close_project
+    open_project $xpr
+}
+
+# ---------------------------------------------------------------------------
 # ts_prepare_bd — make sure the block design's HDL targets and wrapper are
 # in sync with the IP catalog before synth/sim runs.  This is the place
 # where stale kernel IPs are detected and upgraded.
 #
 #   1. Any IP whose stored XCI is older than the catalog is reported as
-#      LOCKED — running upgrade_ip rebuilds the XCI from the new source;
-#      then the kernel instances' m_axi widths are put back to the IPs'
-#      defaults (ts_apply_ip_default_widths).
+#      LOCKED — running upgrade_ip rebuilds the XCI from the new source.
+#      Sub-cores count (get_ips -all: an interconnect's crossbar); a BD still
+#      locked after the upgrade gets one reopen of the project and a second
+#      upgrade before the error.  Then the kernel instances' m_axi widths are
+#      put back to the IPs' defaults (ts_apply_ip_default_widths).
 #   2. generate_target rebuilds the BD's HDL output (.gen/<bd>/...).  Safe
 #      to run on an already-up-to-date tree (it's a no-op then).
 #   3. make_wrapper rewrites design_<k>_wrapper.v at the project's current
@@ -102,57 +155,50 @@ proc ts_apply_ip_default_widths {bd_file} {
 # whatever the .xpr last saved.
 # ---------------------------------------------------------------------------
 proc ts_prepare_bd {wrapper_top} {
-    set locked [get_ips -quiet -filter {IS_LOCKED == 1}]
-    if {[llength $locked] > 0} {
-        set names {}
-        foreach ip $locked { lappend names [get_property NAME $ip] }
-        puts "\[ts\] Upgrading [llength $locked] locked IP(s): [join $names {, }]"
-        upgrade_ip $locked
-
-        # Re-query: IPs whose VLNV cannot be resolved in any visible
-        # ip_repo_paths entry stay locked even after upgrade_ip — Vivado
-        # has nothing to upgrade *to*.  generate_target / make_wrapper
-        # would then fail with a useless "BD is locked" message; bail with
-        # an actionable error pointing at --ip-repo instead.
-        set still_locked [get_ips -quiet -filter {IS_LOCKED == 1}]
-        if {[llength $still_locked] > 0} {
-            puts "\[ts\] ERROR: IP(s) still locked after upgrade_ip:"
-            foreach ip $still_locked {
-                set nm   [get_property NAME  $ip]
-                set vlnv [get_property IPDEF $ip]
-                # LOCK_STATUS is the canonical "why locked" property in
-                # 2024.x+, but fall back gracefully on older releases.
-                set reason ""
-                if {[catch {get_property LOCK_STATUS $ip} val] == 0} {
-                    set reason $val
-                } elseif {[catch {get_property LOCK_REASON $ip} val] == 0} {
-                    set reason $val
-                } else {
-                    set reason "(no LOCK_STATUS / LOCK_REASON property)"
-                }
-                puts "\[ts\]   - $nm    vlnv=$vlnv    reason=$reason"
-            }
-            set repos [get_property ip_repo_paths [current_project]]
-            if {[llength $repos] == 0} {
-                puts "\[ts\] Project ip_repo_paths is EMPTY."
-            } else {
-                puts "\[ts\] Current ip_repo_paths:"
-                foreach r $repos { puts "\[ts\]   - $r" }
-            }
-            puts "\[ts\]"
-            puts "\[ts\] This usually means the kernel's HLS IP catalogue is missing from the"
-            puts "\[ts\] paths above (or the version stored in the .xci is unreachable).  Re-run"
-            puts "\[ts\] with --ip-repo / IP_REPO_<kernel>=<dir> pointing at the directory that"
-            puts "\[ts\] contains the kernel's exported IP, e.g. for the pooling kernel:"
-            puts "\[ts\]"
-            puts "\[ts\]   make tb-pooling DATA_DIR_pooling=<...> \\"
-            puts "\[ts\]                   IP_REPO_pooling=/path/to/axi_demo/build/kernels/pooling"
-            puts "\[ts\]"
-            error "ts_prepare_bd: locked IPs prevent BD wrapper generation (see above)"
-        }
-        puts "\[ts\] IP upgrade complete"
-    } else {
+    if {[ts_upgrade_locked_ips] == 0} {
         puts "\[ts\] No locked IPs"
+    }
+    if {[ts_bd_locked]} {
+        puts "\[ts\] Still locked after upgrade_ip — reopening the project and upgrading again"
+        ts_reopen_project
+        ts_upgrade_locked_ips
+    }
+    if {[ts_bd_locked]} {
+        # IPs whose VLNV cannot be resolved in any visible ip_repo_paths entry
+        # stay locked — Vivado has nothing to upgrade *to*.  generate_target /
+        # make_wrapper would then fail with a useless "BD is locked" message;
+        # bail with an actionable error pointing at --ip-repo instead.
+        puts "\[ts\] ERROR: still locked after upgrade_ip and a reopen:"
+        foreach ip [ts_locked_ips] {
+            set nm   [get_property NAME  $ip]
+            set vlnv [get_property IPDEF $ip]
+            # LOCK_DETAILS is the "why locked" property in 2025.x.
+            set reason ""
+            foreach prop {LOCK_DETAILS LOCK_STATUS LOCK_REASON} {
+                if {[catch {get_property $prop $ip} val] == 0 && $val ne ""} {
+                    set reason $val
+                    break
+                }
+            }
+            puts "\[ts\]   - $nm    vlnv=$vlnv    reason=$reason"
+        }
+        set repos [get_property ip_repo_paths [current_project]]
+        if {[llength $repos] == 0} {
+            puts "\[ts\] Project ip_repo_paths is EMPTY."
+        } else {
+            puts "\[ts\] Current ip_repo_paths:"
+            foreach r $repos { puts "\[ts\]   - $r" }
+        }
+        puts "\[ts\]"
+        puts "\[ts\] This usually means the kernel's HLS IP catalogue is missing from the"
+        puts "\[ts\] paths above (or the version stored in the .xci is unreachable).  Re-run"
+        puts "\[ts\] with --ip-repo / IP_REPO_<kernel>=<dir> pointing at the directory that"
+        puts "\[ts\] contains the kernel's exported IP, e.g. for the pooling kernel:"
+        puts "\[ts\]"
+        puts "\[ts\]   make tb-pooling DATA_DIR_pooling=<...> \\"
+        puts "\[ts\]                   IP_REPO_pooling=/path/to/axi_demo/build/kernels/pooling"
+        puts "\[ts\]"
+        error "ts_prepare_bd: locked IPs prevent BD wrapper generation (see above)"
     }
 
     set bd_files [get_files -of_objects [get_filesets sources_1] \
