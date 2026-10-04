@@ -25,7 +25,7 @@
 #   make tb-conv DATA_DIR_conv=... REPORT_conv=/tmp/conv.json IP_REPO_conv=/path/to/kernels
 #   make clean-conv                               # wipe Vivado scratch dirs
 #   make all-hw                                   # build hardware for every kernel
-#   make all-tb DATA_DIR_conv=... DATA_DIR_matmul=...
+#   make all-tb DATA_DIR_conv=... DATA_DIR_matmul_op=...
 # ---------------------------------------------------------------------------
 
 SHELL := /usr/bin/env bash
