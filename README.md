@@ -41,9 +41,10 @@ generators all live in the parent
 This test stand consumes two of cormorant's outputs:
 
 - **HLS IP catalogues** — produced by cormorant's `make synthesize_<k>_kv260`
-  targets under `cormorant/build/kernels/<k>/kv260/` (MatmulKernel and
-  VectorOPKernel: the SystemVerilog IPs, `make package_matmul_rtl` /
-  `make package_vectorop_rtl`, at `cormorant/build/rtl_ip/<Kernel>_ip/`). Pass the
+  targets under `cormorant/build/kernels/<k>/kv260/` (MatmulKernel,
+  VectorOPKernel and PoolingKernel: the SystemVerilog IPs, `make
+  package_matmul_rtl` / `make package_vectorop_rtl` / `make
+  package_pool_rtl`, at `cormorant/build/rtl_ip/<Kernel>_ip/`). Pass the
   matching directory with `IP_REPO_<k>=` (see Quick start below).
 - **Behavioural test fixtures** (`manifest.txt` + per-test `.hex` files) —
   produced by cormorant's `make gen_<k>_test_data` targets (into its build
