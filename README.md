@@ -18,7 +18,7 @@ Test fixtures (`manifest.txt` + per-test `.hex` files) are produced
 point the testbench at them per-run with a `DATA_DIR` knob — each kernel can
 have its own.
 
-The kernel's HLS IP catalogue (the directory the .xpr's `ip_repo_paths`
+The kernel's IP catalogue (the directory the .xpr's `ip_repo_paths`
 references) is also external. Repoint it per-run with `--ip-repo` /
 `IP_REPO_<k>=` so the test stand picks up freshly-rebuilt kernel sources
 without editing the project file. Whether or not the override is supplied,
@@ -40,11 +40,11 @@ generators all live in the parent
 [**cormorant**](https://github.com/GradeBuilderSL/cormorant) repository.
 This test stand consumes two of cormorant's outputs:
 
-- **HLS IP catalogues** — produced by cormorant's `make synthesize_<k>_kv260`
-  targets under `cormorant/build/kernels/<k>/kv260/` (MatmulKernel,
-  VectorOPKernel and PoolingKernel: the SystemVerilog IPs, `make
-  package_matmul_rtl` / `make package_vectorop_rtl` / `make
-  package_pool_rtl`, at `cormorant/build/rtl_ip/<Kernel>_ip/`). Pass the
+- **IP catalogues** — the four kernels' SystemVerilog IPs, produced by
+  cormorant's `make package_<k>_rtl` targets at
+  `cormorant/build/rtl_ip/<Kernel>_ip/` (the Vitis HLS exports of the
+  retired `make synthesize_<k>_kv260` targets, under
+  `cormorant/build/kernels/<k>/kv260/`, carried the same VLNVs). Pass the
   matching directory with `IP_REPO_<k>=` (see Quick start below).
 - **Behavioural test fixtures** (`manifest.txt` + per-test `.hex` files) —
   produced by cormorant's `make gen_<k>_test_data` targets (into its build
@@ -109,7 +109,7 @@ cormorant_test_stand/
 - **A fixtures directory per kernel** containing `manifest.txt` and the
   `test_*.hex` files the testbench reads. Generated however the kernel's
   upstream pipeline generates them; not produced here.
-- **An IP repository** holding the kernel's exported HLS IP catalogue. The
+- **An IP repository** holding the kernel's packaged IP. The
   path stored in the .xpr can drift between machines; use
   `IP_REPO_<k>=<dir>` to override at run time (see Quick start below).
 
@@ -236,12 +236,12 @@ conventions the Tcl drivers assume.
 
 ### When the kernel grows new AXI-Lite registers
 
-If a new HLS revision adds control registers (e.g. extra loop-bound
+If a new kernel revision adds control registers (e.g. extra loop-bound
 parameters), two things have to be in sync after the IP repo is updated:
 
 1. **Testbench register map** — add the new offsets and an `axil_write` for
-   each one in the driver's `run` task. Sourced from the kernel's HLS-
-   generated `xkernel_hw.h`.
+   each one in the driver's `run` task. Sourced from the kernel driver's
+   `x<kernel>_hw.h`.
 2. **BD address segment** — the address editor must allocate a range wide
    enough to cover the highest register offset. If the segment is sized for
    the old register layout, writes to the new offsets return OKAY on the
@@ -263,7 +263,7 @@ over old generated outputs — is upgraded too, and cleared by the reopen.)
 
 **Kernel completes (`ap_done` fires) but the output buffer keeps the poison
 value** — usually a runtime parameter the kernel reads is zero. Check that
-the testbench programs every register in the new HLS-generated header (in
+the testbench programs every register in the new driver header (in
 particular any new loop-bound register added in the latest revision), and
 that the BD address segment for the kernel's CTRL port is wide enough to
 cover it (see "When the kernel grows new AXI-Lite registers").
@@ -278,7 +278,7 @@ cover it (see "When the kernel grows new AXI-Lite registers").
 | `DATA_DIR` | Single-kernel shorthand for `DATA_DIR_<k>` |
 | `REPORT_<k>` | JSON report path for kernel `<k>` (default `kernels/<k>_test/<k>_test_report.json`) |
 | `REPORT` | Single-kernel shorthand for `REPORT_<k>` |
-| `IP_REPO_<k>` | Override the HLS IP repository path stored in kernel `<k>`'s `.xpr` |
+| `IP_REPO_<k>` | Override the IP repository path stored in kernel `<k>`'s `.xpr` |
 | `IP_REPO` | Single-kernel shorthand for `IP_REPO_<k>` |
 | `TS_WAVES` | `1` restores Vivado's default sim tcl (`add_wave /` into a .wdb). Default: batch run with no waveform logging; same results, smaller .wdb, modestly faster on large fixtures (xsim is CPU-bound in the design itself) |
 | `TS_VERBOSE` | `1` passes `+VERBOSE` to the testbench so its per-beat AXI / DDR monitors print (conv_tb; default off — they dominate the log) |

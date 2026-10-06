@@ -1117,6 +1117,14 @@ module conv_tb;
         end
     end
 
+`ifdef CONV_TB_HLS_PROBES
+    // The two probes below look inside the Vitis HLS ConvKernel's dataflow
+    // processes (x_row_loader_U0, the acc_stream FIFO); the SystemVerilog
+    // ConvKernel (axi_demo kernels/conv_rtl, the same IP VLNV) has neither, and
+    // a hierarchical reference that does not resolve stops the elaboration.
+    // Compile with CONV_TB_HLS_PROBES defined (xelab -d) to use them on the
+    // HLS IP.
+
     // ---- x_row_loader FSM trace (+VERBOSE only, §2.39 loader pacing) ----
     // One line per state change of the loader's top-level FSM (one-hot);
     // the pipelined sub-loops appear as the states that start them.
@@ -1164,6 +1172,7 @@ module conv_tb;
             end
         end
     end
+`endif  // CONV_TB_HLS_PROBES
 
     // ---- gmem3 B-channel (y write response) -----------------------------
     initial begin : ck_gmem3_b_probe

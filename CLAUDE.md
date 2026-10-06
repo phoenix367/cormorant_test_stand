@@ -21,7 +21,7 @@ Test fixtures (`manifest.txt` + `test_*.hex`) live **outside** this repo and
 are passed in per-run via a mandatory `DATA_DIR` knob. Each kernel can have
 its own fixtures directory; this repo never auto-locates or generates them.
 
-The kernel's HLS IP catalogue is also external. The `--ip-repo` /
+The kernel's IP catalogue is also external. The `--ip-repo` /
 `IP_REPO_<k>` knob overrides the path stored in the .xpr; whether or not
 it's set, both `build_hw.sh` and `run_tb.sh` always run the shared
 `ts_prepare_bd` proc — it `upgrade_ip`s any locked IPs (sub-cores included,
