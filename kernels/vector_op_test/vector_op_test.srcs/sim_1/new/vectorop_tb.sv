@@ -15,7 +15,7 @@
 //   Kernel: VectorOPKernel (ap_fixed<16,8>; gmem0/A, gmem1/B, gmem2/C)
 //
 // Test fixtures live in the directory passed via +DATA_DIR=<dir>:
-//   manifest.txt        — one row per test (6 ints + label, see test::run)
+//   manifest.txt        — one row per test (11 ints + label, see parse_manifest_line)
 //   test_<NN>_a.hex     — input A vector as 16-bit raw values, one per line
 //   test_<NN>_b.hex     — input B vector as 16-bit raw values, one per line
 //   test_<NN>_c.hex     — reference C output as 16-bit raw values, one per line
@@ -44,6 +44,9 @@
 //   0x54 b_inc              (0x58 reserved)
 //   0x5C act                (0x60 reserved)   fused activation, 0 = none
 //   0x64 alpha              (0x68 reserved)   LeakyReLU slope, alpha[15:0] / 65536
+//   0x6C smx_cm             (0x70 reserved)   softmax: Cm [23:0]
+//   0x74 smx_cfg            (0x78 reserved)   softmax: Cs [5:0], f_p [12:8]
+//   0x7C smx_mask                             softmax: valid0 [15:0], period [31:16]
 // outer / a_inc / b_inc / act reset to 0; outer=0 makes the kernel emit no
 // writes, so the testbench MUST program these every transaction (the manifest
 // may carry outer=1 a_inc=0 b_inc=0 act=0 — that still has to be written).
@@ -54,7 +57,9 @@
 // whole words (lanes past `size` are masked) and write the last word of every
 // run whole, so c positions in [size, ceil8(size)) of a run hold 0 and the
 // positions up to the next run are untouched — the scoreboard compares only
-// the valid positions.
+// the valid positions.  The softmax ops (doc/plans/SOFTMAX_PLAN.md) write with
+// c_inc = b_inc: OP_SOFTMAX outer rows of size, OP_SOFTMAX_T (input s[size keys]
+// [outer queries] at row stride a_inc) outer & ~15 rows of size.
 // ============================================================================
 
 module vectorop_tb;
@@ -87,6 +92,9 @@ module vectorop_tb;
     localparam [39:0] REG_B_INC   = CTRL_BASE + 40'h54;  // B advance per outer iteration (elements)
     localparam [39:0] REG_ACT     = CTRL_BASE + 40'h5C;  // fused activation (Act enum, 0 none)
     localparam [39:0] REG_ALPHA   = CTRL_BASE + 40'h64;  // LeakyReLU slope, alpha[15:0] / 65536
+    localparam [39:0] REG_SMX_CM   = CTRL_BASE + 40'h6C; // softmax: Cm [23:0]
+    localparam [39:0] REG_SMX_CFG  = CTRL_BASE + 40'h74; // softmax: Cs [5:0], f_p [12:8]
+    localparam [39:0] REG_SMX_MASK = CTRL_BASE + 40'h7C; // softmax: valid0 [15:0], period [31:16]
 
     // Op enum (must match include/VectorOP.h)
     localparam int unsigned OP_ADD   = 0;
@@ -99,6 +107,8 @@ module vectorop_tb;
     localparam int unsigned OP_SILU       = 7;
     localparam int unsigned OP_GELU       = 8;
     localparam int unsigned OP_GELU_TANH  = 9;
+    localparam int unsigned OP_SOFTMAX    = 10;  // row mode (unary)
+    localparam int unsigned OP_SOFTMAX_T  = 11;  // column mode (unary)
 
     // -----------------------------------------------------------------------
     // Test parameters
@@ -137,6 +147,8 @@ module vectorop_tb;
             OP_SILU:       return "SILU";
             OP_GELU:       return "GELU";
             OP_GELU_TANH:  return "GELU_TANH";
+            OP_SOFTMAX:    return "SOFTMAX";
+            OP_SOFTMAX_T:  return "SOFTMAX_T";
             default:  return $sformatf("OP%0d", op);
         endcase
     endfunction
@@ -157,7 +169,12 @@ module vectorop_tb;
         int unsigned b_inc;         // per-outer-iter B advance (elements, 0 = repeat)
         int unsigned act;           // fused activation (Act enum, 0 none)
         int unsigned alpha;         // LeakyReLU slope (alpha[15:0] / 65536)
+        int unsigned smx_cm;        // softmax registers (0 for the other ops)
+        int unsigned smx_cfg;
+        int unsigned smx_mask;
         bit          is_unary;      // 1 for op >= RELU — kernel skips B reads
+        bit          is_smx;        // OP_SOFTMAX / OP_SOFTMAX_T
+        int unsigned rows;          // output runs: outer (OP_SOFTMAX_T: outer & ~15)
 
         // Element extents (derived from the geometry, see the header): the
         // upstream pipeline emits .hex files of exactly these sizes.
@@ -187,7 +204,10 @@ module vectorop_tb;
                      int unsigned   a_inc_,
                      int unsigned   b_inc_,
                      int unsigned   act_,
-                     int unsigned   alpha_);
+                     int unsigned   alpha_,
+                     int unsigned   smx_cm_ = 0,
+                     int unsigned   smx_cfg_ = 0,
+                     int unsigned   smx_mask_ = 0);
             int unsigned a_bytes, b_bytes, n_outer;
 
             this.index    = index_;
@@ -199,13 +219,20 @@ module vectorop_tb;
             this.b_inc    = b_inc_;
             this.act      = act_;
             this.alpha    = alpha_;
+            this.smx_cm   = smx_cm_;
+            this.smx_cfg  = smx_cfg_;
+            this.smx_mask = smx_mask_;
             this.is_unary = (op_ >= OP_RELU);
+            this.is_smx   = (op_ == OP_SOFTMAX) || (op_ == OP_SOFTMAX_T);
+            this.rows     = (op_ == OP_SOFTMAX_T) ? (outer_ & ~32'd15) : outer_;
 
-            // Extents: (outer-1) * stride + size for each array.
-            n_outer       = outer_ ? outer_ : 1;
-            this.c_inc    = a_inc_ + b_inc_;
-            this.a_count  = (n_outer - 1) * a_inc_ + size_;
-            this.b_count  = (n_outer - 1) * b_inc_ + size_;
+            // Extents: (outer-1) * stride + size for each array (the softmax:
+            // no b; OP_SOFTMAX_T reads size key rows of outer queries).
+            n_outer       = this.rows ? this.rows : 1;
+            this.c_inc    = this.is_smx ? b_inc_ : a_inc_ + b_inc_;
+            this.a_count  = (op_ == OP_SOFTMAX_T) ? (size_ - 1) * a_inc_ + outer_
+                                                  : ((outer_ ? outer_ : 1) - 1) * a_inc_ + size_;
+            this.b_count  = this.is_smx ? 0 : (n_outer - 1) * b_inc_ + size_;
             this.c_count  = (n_outer - 1) * this.c_inc + size_;
 
             a_bytes = align_up(this.a_count * ELEM_BYTES, 16);
@@ -218,7 +245,7 @@ module vectorop_tb;
         // 1 when c position e is produced by the kernel (inside a run's
         // `size` elements); 0 for the alignment tail / stride gap.
         function bit c_valid(int unsigned e);
-            if (outer <= 1 || c_inc == 0) return (e < size);
+            if (rows <= 1 || c_inc == 0) return (e < size);
             return ((e % c_inc) < size);
         endfunction
 
@@ -233,15 +260,16 @@ module vectorop_tb;
             c_ref  = new[c_count];
             idx_str = $sformatf("%02d", index);
             $readmemh($sformatf("%s/test_%s_a.hex", dir, idx_str), a_data);
-            $readmemh($sformatf("%s/test_%s_b.hex", dir, idx_str), b_data);
+            if (b_count != 0)                       // the softmax fixtures' b.hex is empty
+                $readmemh($sformatf("%s/test_%s_b.hex", dir, idx_str), b_data);
             $readmemh($sformatf("%s/test_%s_c.hex", dir, idx_str), c_ref);
         endfunction
 
         function string to_string();
             return $sformatf(
-                "%-16s  op=%0d(%s)  size=%0d outer=%0d  a_inc=%0d b_inc=%0d act=%0d alpha=%0d  unary=%0d  |A|=%0d |B|=%0d |C|=%0d",
+                "%-16s  op=%0d(%s)  size=%0d outer=%0d  a_inc=%0d b_inc=%0d act=%0d alpha=%0d  smx=%0d/%0d/%0d  unary=%0d  |A|=%0d |B|=%0d |C|=%0d",
                 label, op, op_to_name(op), size, outer,
-                a_inc, b_inc, act, alpha, is_unary, a_count, b_count, c_count);
+                a_inc, b_inc, act, alpha, smx_cm, smx_cfg, smx_mask, is_unary, a_count, b_count, c_count);
         endfunction
     endclass
 
@@ -395,6 +423,9 @@ module vectorop_tb;
             axil_write(REG_B_INC, 32'(item.b_inc));
             axil_write(REG_ACT,   32'(item.act));
             axil_write(REG_ALPHA, 32'(item.alpha));
+            axil_write(REG_SMX_CM,   32'(item.smx_cm));
+            axil_write(REG_SMX_CFG,  32'(item.smx_cfg));
+            axil_write(REG_SMX_MASK, 32'(item.smx_mask));
 
             // Enable ap_done interrupt and assert ap_start
             axil_write(REG_GIE,     32'h1);
@@ -714,15 +745,15 @@ module vectorop_tb;
         env      e;
         vop_item tests[$];
 
-        // Parse one manifest line — 8 ints + 1 trailing label token —
+        // Parse one manifest line — 11 ints + 1 trailing label token —
         // and create + load a vop_item.  Returns null if the line is
         // blank, a comment, or unparseable.  Manifest column layout
         // (matches the upstream vectorop reference dump):
         //
-        //   idx size op outer a_inc b_inc act alpha  label
+        //   idx size op outer a_inc b_inc act alpha smx_cm smx_cfg smx_mask  label
         //
-        // Older manifests are accepted: 7 ints (no alpha column: alpha = 0)
-        // and 6 ints (no act column either: act = 0).
+        // Older manifests are accepted: 8 ints (no softmax columns: 0), 7 ints
+        // (no alpha column: alpha = 0) and 6 ints (no act column either: act = 0).
         //
         // Per-test a / b / c arrays are loaded from
         // <data_dir>/test_<NN>_{a,b,c}.hex via $readmemh.
@@ -734,7 +765,9 @@ module vectorop_tb;
                                                          string data_dir);
             int unsigned idx;
             int unsigned size_, op_, outer_, a_inc_, b_inc_, act_, alpha_;
-            string       label, tok7, tok8;
+            int unsigned scm_, scfg_, smask_;
+            string       label, tok7, tok8, tok9, tok10, tok11, tok12;
+            string       toks[6];
             int          rc;
             int          first;
             vop_item     it;
@@ -748,29 +781,35 @@ module vectorop_tb;
             if (first == line.len()) return null;
             if (line.getc(first) == "#") return null;
 
-            rc = $sscanf(line, "%d %d %d %d %d %d %s %s %s",
-                idx, size_, op_, outer_, a_inc_, b_inc_, tok7, tok8, label);
+            rc = $sscanf(line, "%d %d %d %d %d %d %s %s %s %s %s %s",
+                idx, size_, op_, outer_, a_inc_, b_inc_, tok7, tok8, tok9, tok10, tok11, tok12);
             if (rc < 6) begin
                 $display("[%0t][TEST] WARN: skipping unparseable manifest line: %s",
                          $time, line);
                 return null;
             end
-            // Tokens 7 and 8: the act and alpha columns when numeric, else
-            // the label of an older manifest.
-            act_   = 0;
-            alpha_ = 0;
-            if (rc >= 7 && !is_number(tok7)) begin
-                label = tok7;
-            end else if (rc >= 8 && !is_number(tok8)) begin
-                act_  = tok7.atoi();
-                label = tok8;
-            end else begin
-                if (rc >= 7) act_   = tok7.atoi();
-                if (rc >= 8) alpha_ = tok8.atoi();
-                if (rc < 9)  label  = op_to_name(op_);
+            // Tokens 7 .. 11: act, alpha, smx_cm, smx_cfg, smx_mask while
+            // numeric; the first non-numeric token (at the latest the 12th)
+            // is the label.
+            toks[0] = tok7; toks[1] = tok8; toks[2] = tok9;
+            toks[3] = tok10; toks[4] = tok11; toks[5] = tok12;
+            act_ = 0; alpha_ = 0; scm_ = 0; scfg_ = 0; smask_ = 0;
+            label = op_to_name(op_);
+            for (int k = 0; k < rc - 6; k++) begin
+                if (!is_number(toks[k]) || k == 5) begin
+                    label = toks[k];
+                    break;
+                end
+                case (k)
+                    0: act_   = toks[k].atoi();
+                    1: alpha_ = toks[k].atoi();
+                    2: scm_   = toks[k].atoi();
+                    3: scfg_  = toks[k].atoi();
+                    default: smask_ = toks[k].atoi();
+                endcase
             end
 
-            it = new(idx, label, size_, op_, outer_, a_inc_, b_inc_, act_, alpha_);
+            it = new(idx, label, size_, op_, outer_, a_inc_, b_inc_, act_, alpha_, scm_, scfg_, smask_);
             it.load_fixture(data_dir);
             return it;
         endfunction
