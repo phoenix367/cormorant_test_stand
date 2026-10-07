@@ -43,6 +43,7 @@
 //   0x4C a_inc              (0x50 reserved)
 //   0x54 b_inc              (0x58 reserved)
 //   0x5C act                (0x60 reserved)   fused activation, 0 = none
+//   0x64 alpha              (0x68 reserved)   LeakyReLU slope, alpha[15:0] / 65536
 // outer / a_inc / b_inc / act reset to 0; outer=0 makes the kernel emit no
 // writes, so the testbench MUST program these every transaction (the manifest
 // may carry outer=1 a_inc=0 b_inc=0 act=0 — that still has to be written).
@@ -84,7 +85,8 @@ module vectorop_tb;
     localparam [39:0] REG_OUTER   = CTRL_BASE + 40'h44;  // outer-loop iteration count
     localparam [39:0] REG_A_INC   = CTRL_BASE + 40'h4C;  // A advance per outer iteration (elements)
     localparam [39:0] REG_B_INC   = CTRL_BASE + 40'h54;  // B advance per outer iteration (elements)
-    localparam [39:0] REG_ACT     = CTRL_BASE + 40'h5C;  // fused activation (0 none / 1 relu / 2 relu6)
+    localparam [39:0] REG_ACT     = CTRL_BASE + 40'h5C;  // fused activation (Act enum, 0 none)
+    localparam [39:0] REG_ALPHA   = CTRL_BASE + 40'h64;  // LeakyReLU slope, alpha[15:0] / 65536
 
     // Op enum (must match include/VectorOP.h)
     localparam int unsigned OP_ADD   = 0;
@@ -93,6 +95,10 @@ module vectorop_tb;
     localparam int unsigned OP_DIV   = 3;
     localparam int unsigned OP_RELU  = 4;
     localparam int unsigned OP_RELU6 = 5;
+    localparam int unsigned OP_LEAKY_RELU = 6;   // the activation ops (unary)
+    localparam int unsigned OP_SILU       = 7;
+    localparam int unsigned OP_GELU       = 8;
+    localparam int unsigned OP_GELU_TANH  = 9;
 
     // -----------------------------------------------------------------------
     // Test parameters
@@ -127,6 +133,10 @@ module vectorop_tb;
             OP_DIV:   return "DIV";
             OP_RELU:  return "RELU";
             OP_RELU6: return "RELU6";
+            OP_LEAKY_RELU: return "LEAKY_RELU";
+            OP_SILU:       return "SILU";
+            OP_GELU:       return "GELU";
+            OP_GELU_TANH:  return "GELU_TANH";
             default:  return $sformatf("OP%0d", op);
         endcase
     endfunction
@@ -145,8 +155,9 @@ module vectorop_tb;
         int unsigned outer;         // outer-loop count
         int unsigned a_inc;         // per-outer-iter A advance (elements, 0 = repeat)
         int unsigned b_inc;         // per-outer-iter B advance (elements, 0 = repeat)
-        int unsigned act;           // fused activation (0 none / 1 relu / 2 relu6)
-        bit          is_unary;      // 1 for RELU/RELU6 — kernel skips B reads
+        int unsigned act;           // fused activation (Act enum, 0 none)
+        int unsigned alpha;         // LeakyReLU slope (alpha[15:0] / 65536)
+        bit          is_unary;      // 1 for op >= RELU — kernel skips B reads
 
         // Element extents (derived from the geometry, see the header): the
         // upstream pipeline emits .hex files of exactly these sizes.
@@ -175,7 +186,8 @@ module vectorop_tb;
                      int unsigned   outer_,
                      int unsigned   a_inc_,
                      int unsigned   b_inc_,
-                     int unsigned   act_);
+                     int unsigned   act_,
+                     int unsigned   alpha_);
             int unsigned a_bytes, b_bytes, n_outer;
 
             this.index    = index_;
@@ -186,7 +198,8 @@ module vectorop_tb;
             this.a_inc    = a_inc_;
             this.b_inc    = b_inc_;
             this.act      = act_;
-            this.is_unary = (op_ == OP_RELU || op_ == OP_RELU6);
+            this.alpha    = alpha_;
+            this.is_unary = (op_ >= OP_RELU);
 
             // Extents: (outer-1) * stride + size for each array.
             n_outer       = outer_ ? outer_ : 1;
@@ -226,9 +239,9 @@ module vectorop_tb;
 
         function string to_string();
             return $sformatf(
-                "%-16s  op=%0d(%s)  size=%0d outer=%0d  a_inc=%0d b_inc=%0d act=%0d  unary=%0d  |A|=%0d |B|=%0d |C|=%0d",
+                "%-16s  op=%0d(%s)  size=%0d outer=%0d  a_inc=%0d b_inc=%0d act=%0d alpha=%0d  unary=%0d  |A|=%0d |B|=%0d |C|=%0d",
                 label, op, op_to_name(op), size, outer,
-                a_inc, b_inc, act, is_unary, a_count, b_count, c_count);
+                a_inc, b_inc, act, alpha, is_unary, a_count, b_count, c_count);
         endfunction
     endclass
 
@@ -347,7 +360,7 @@ module vectorop_tb;
                      $time, item.a_count);
             write_data_ddr(item.addr_a, item.a_data, item.a_count);
 
-            // Kernel issues no gmem1 AXI transactions for OP_RELU / OP_RELU6
+            // Kernel issues no gmem1 AXI transactions for the unary ops (>= OP_RELU)
             // (op is loop-invariant in HLS), so skip the B push for unary ops.
             if (!item.is_unary) begin
                 $display("[%0t][DRV] Loading B   (%0d elements) ...",
@@ -367,8 +380,8 @@ module vectorop_tb;
             // they reset to 0 in the kernel, and outer=0 means the kernel
             // emits no writes — so they must be programmed every test even
             // when the manifest sets them all to defaults.
-            $display("[%0t][DRV] Programming registers (op=%0d outer=%0d a_inc=%0d b_inc=%0d act=%0d) ...",
-                     $time, item.op, item.outer, item.a_inc, item.b_inc, item.act);
+            $display("[%0t][DRV] Programming registers (op=%0d outer=%0d a_inc=%0d b_inc=%0d act=%0d alpha=%0d) ...",
+                     $time, item.op, item.outer, item.a_inc, item.b_inc, item.act, item.alpha);
             axil_write(REG_A_LO,  item.addr_a[31:0]);
             axil_write(REG_A_HI,  {24'b0, item.addr_a[39:32]});
             axil_write(REG_B_LO,  item.addr_b[31:0]);
@@ -381,6 +394,7 @@ module vectorop_tb;
             axil_write(REG_A_INC, 32'(item.a_inc));
             axil_write(REG_B_INC, 32'(item.b_inc));
             axil_write(REG_ACT,   32'(item.act));
+            axil_write(REG_ALPHA, 32'(item.alpha));
 
             // Enable ap_done interrupt and assert ap_start
             axil_write(REG_GIE,     32'h1);
@@ -700,22 +714,27 @@ module vectorop_tb;
         env      e;
         vop_item tests[$];
 
-        // Parse one manifest line — 7 ints + 1 trailing label token —
+        // Parse one manifest line — 8 ints + 1 trailing label token —
         // and create + load a vop_item.  Returns null if the line is
         // blank, a comment, or unparseable.  Manifest column layout
         // (matches the upstream vectorop reference dump):
         //
-        //   idx size op outer a_inc b_inc act   label
+        //   idx size op outer a_inc b_inc act alpha  label
         //
-        // Older 6-int manifests (no act column) are accepted with act = 0.
+        // Older manifests are accepted: 7 ints (no alpha column: alpha = 0)
+        // and 6 ints (no act column either: act = 0).
         //
         // Per-test a / b / c arrays are loaded from
         // <data_dir>/test_<NN>_{a,b,c}.hex via $readmemh.
+        function automatic bit is_number(string t);
+            return t.len() > 0 && t.getc(0) >= "0" && t.getc(0) <= "9";
+        endfunction
+
         function automatic vop_item parse_manifest_line(string line,
                                                          string data_dir);
             int unsigned idx;
-            int unsigned size_, op_, outer_, a_inc_, b_inc_, act_;
-            string       label, tok7;
+            int unsigned size_, op_, outer_, a_inc_, b_inc_, act_, alpha_;
+            string       label, tok7, tok8;
             int          rc;
             int          first;
             vop_item     it;
@@ -729,27 +748,29 @@ module vectorop_tb;
             if (first == line.len()) return null;
             if (line.getc(first) == "#") return null;
 
-            rc = $sscanf(line, "%d %d %d %d %d %d %s %s",
-                idx, size_, op_, outer_, a_inc_, b_inc_, tok7, label);
+            rc = $sscanf(line, "%d %d %d %d %d %d %s %s %s",
+                idx, size_, op_, outer_, a_inc_, b_inc_, tok7, tok8, label);
             if (rc < 6) begin
                 $display("[%0t][TEST] WARN: skipping unparseable manifest line: %s",
                          $time, line);
                 return null;
             end
-            // 7th token: the act column when numeric, else a legacy label.
-            act_ = 0;
-            if (rc >= 7) begin
-                if (tok7.len() > 0 && tok7.getc(0) >= "0" && tok7.getc(0) <= "9") begin
-                    act_ = tok7.atoi();
-                    if (rc < 8) label = op_to_name(op_);
-                end else begin
-                    label = tok7;
-                end
+            // Tokens 7 and 8: the act and alpha columns when numeric, else
+            // the label of an older manifest.
+            act_   = 0;
+            alpha_ = 0;
+            if (rc >= 7 && !is_number(tok7)) begin
+                label = tok7;
+            end else if (rc >= 8 && !is_number(tok8)) begin
+                act_  = tok7.atoi();
+                label = tok8;
             end else begin
-                label = op_to_name(op_);
+                if (rc >= 7) act_   = tok7.atoi();
+                if (rc >= 8) alpha_ = tok8.atoi();
+                if (rc < 9)  label  = op_to_name(op_);
             end
 
-            it = new(idx, label, size_, op_, outer_, a_inc_, b_inc_, act_);
+            it = new(idx, label, size_, op_, outer_, a_inc_, b_inc_, act_, alpha_);
             it.load_fixture(data_dir);
             return it;
         endfunction
