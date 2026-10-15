@@ -66,6 +66,7 @@
 //   0xB0 pad_left  (0xB4 reserved)
 //   0xB8 has_bias  (0xBC reserved)
 //   0xC0 is_depthwise (0xC4 reserved)
+//   0xC8 y_cs  0xD0 y_cn  0xD8 y_gs — the y channel pattern (RPU_PLAN §13.2; 0 = dense)
 //
 // Test matrix (standard conv):
 //   1×1×1×1 k=1×1           - degenerate minimum
@@ -131,6 +132,11 @@ module conv_tb;
     localparam [39:0] REG_PAD_LEFT     = CTRL_BASE + 40'hB0;
     localparam [39:0] REG_HAS_BIAS     = CTRL_BASE + 40'hB8;
     localparam [39:0] REG_IS_DEPTHWISE = CTRL_BASE + 40'hC0;
+    // the y channel pattern (RPU_PLAN §13.2): channel c at (c mod y_cn) * y_cs
+    // + (c div y_cn) * y_gs elements; 0 0 0 = dense NCHW
+    localparam [39:0] REG_Y_CS         = CTRL_BASE + 40'hC8;
+    localparam [39:0] REG_Y_CN         = CTRL_BASE + 40'hD0;
+    localparam [39:0] REG_Y_GS         = CTRL_BASE + 40'hD8;
 
     // -----------------------------------------------------------------------
     // Testbench parameters
@@ -192,9 +198,11 @@ module conv_tb;
         int unsigned pad_top, pad_left;
         int unsigned has_bias;
         int unsigned is_depthwise;
+        int unsigned y_cs, y_cn, y_gs;          // the y channel pattern (0 0 0: dense)
 
-        // Element counts (derived).
-        int unsigned x_count, w_count, b_count, y_count;
+        // Element counts (derived); y_span: elements from y to one past the
+        // last one written (y_count when dense)
+        int unsigned x_count, w_count, b_count, y_count, y_span;
 
         // DDR base addresses.
         logic [39:0] addr_x;
@@ -221,7 +229,8 @@ module conv_tb;
                      int unsigned    dilation_h_,  int unsigned dilation_w_,
                      int unsigned    pad_top_,     int unsigned pad_left_,
                      int unsigned    has_bias_,
-                     int unsigned    is_depthwise_);
+                     int unsigned    is_depthwise_,
+                     int unsigned    y_cs_ = 0, int unsigned y_cn_ = 0, int unsigned y_gs_ = 0);
             int unsigned x_bytes, w_bytes, b_bytes;
 
             this.index        = index_;
@@ -243,6 +252,9 @@ module conv_tb;
             this.pad_left     = pad_left_;
             this.has_bias     = has_bias_;
             this.is_depthwise = is_depthwise_;
+            this.y_cs         = y_cs_;
+            this.y_cn         = y_cn_;
+            this.y_gs         = y_gs_;
 
             // Element counts.  Weights and bias use ConvKernel's packed DDR
             // layout (ConvKernel.h "Weight / bias port width and DDR layout";
@@ -265,6 +277,13 @@ module conv_tb;
             end
             this.b_count = ((out_ch_ + 7) / 8) * 8;
             this.y_count = batch_  * out_ch_ * out_h_ * out_w_;
+            this.y_span  = this.y_count;
+            if (has_pattern()) begin
+                this.y_span = 0;
+                for (int unsigned c = 0; c < out_ch_; c++)
+                    if (y_base(c) + out_h_ * out_w_ > this.y_span)
+                        this.y_span = y_base(c) + out_h_ * out_w_;
+            end
 
             // DDR layout: x | gap | weight | gap | bias | gap | y
             x_bytes = align_up(this.x_count * ELEM_BYTES, 16);
@@ -275,6 +294,17 @@ module conv_tb;
             this.addr_w = this.addr_x + 40'(x_bytes) + 40'(MEM_GAP);
             this.addr_b = this.addr_w + 40'(w_bytes) + 40'(MEM_GAP);
             this.addr_y = this.addr_b + 40'(b_bytes) + 40'(MEM_GAP);
+        endfunction
+
+        function bit has_pattern();
+            return (y_cs != 0) || (y_cn != 0) || (y_gs != 0);
+        endfunction
+
+        // element offset of channel c (one image: the pattern needs batch 1)
+        function int unsigned y_base(int unsigned c);
+            int unsigned cs;
+            cs = (y_cs != 0) ? y_cs : out_h * out_w;
+            return (y_cn != 0) ? (c % y_cn) * cs + (c / y_cn) * y_gs : c * cs;
         endfunction
 
         // Load x/w/b/y_ref from <dir>/test_<NN>_*.hex.  Each file holds one
@@ -378,7 +408,7 @@ module conv_tb;
 
             $display("[%0t][DRV] %s", $time, item.to_string());
 
-            y_bytes = item.y_count * ELEM_BYTES;
+            y_bytes = item.y_span * ELEM_BYTES;        // the strided span (y_count when dense)
 
             $display("[%0t][DRV] Loading x   (%0d elements) ...",
                      $time, item.x_count);
@@ -424,6 +454,9 @@ module conv_tb;
             axil_write(REG_PAD_LEFT,      32'(item.pad_left));
             axil_write(REG_HAS_BIAS,      32'(item.has_bias));
             axil_write(REG_IS_DEPTHWISE,  32'(item.is_depthwise));
+            axil_write(REG_Y_CS,          32'(item.y_cs));     // always: a register keeps its value
+            axil_write(REG_Y_CN,          32'(item.y_cn));
+            axil_write(REG_Y_GS,          32'(item.y_gs));
 
             // Enable ap_done interrupt and assert ap_start.
             axil_write(REG_GIE,     32'h1);
@@ -583,6 +616,50 @@ module conv_tb;
                      $time, total_elems - 1, total_elems,
                      ELEM_BYTES, n_bytes);
 
+            if (item.has_pattern()) begin
+                // the y channel pattern: read the whole span, every element of
+                // y_ref at its channel's plane, every other element still poison
+                logic [15:0] ydump[];
+                bit          wr[];
+                int unsigned span_b, hw, at;
+                hw     = item.out_h * item.out_w;
+                span_b = align_up(item.y_span * ELEM_BYTES, 16);
+                ydump  = new[span_b / 2];
+                wr     = new[span_b / 2];
+                for (int unsigned off = 0; off < span_b; off += CHUNK_SIZE) begin
+                    int unsigned len;
+                    len = (span_b - off < CHUNK_SIZE) ? span_b - off : CHUNK_SIZE;
+                    `PS.read_mem(item.addr_y + 40'(off), len, chunk_buf);
+                    for (w = 0; w < len / 2; w++) ydump[off / 2 + w] = chunk_buf[w*16 +: 16];
+                end
+                for (eidx = 0; eidx < total_elems; eidx++) begin
+                    at  = item.y_base(eidx / hw) + eidx % hw;
+                    wr[at] = 1'b1;
+                    elem = ydump[at];
+                    exp  = item.y_ref[eidx];
+                    if (elem !== exp) begin
+                        if (errors < 5)
+                            $display("[%0t][SCB] MISMATCH y[%0d] (at %0d): got=0x%04h  exp=0x%04h",
+                                     $time, eidx, at, elem, exp);
+                        if (errors < MAX_MM) begin
+                            tr.mm_idx.push_back(eidx);
+                            tr.mm_got.push_back(elem);
+                            tr.mm_exp.push_back(exp);
+                        end
+                        errors++;
+                    end
+                end
+                for (at = 0; at < span_b / 2; at++)
+                    if (!wr[at] && ydump[at] !== Y_POISON) begin
+                        if (errors < 5)
+                            $display("[%0t][SCB] GAP CLOBBERED y+%0d: got=0x%04h  exp=0x%04h",
+                                     $time, at, ydump[at], Y_POISON);
+                        errors++;
+                    end
+                n_chunks = 0;                               // the dense checks below are done
+                rem      = 0;
+            end
+
             for (int i = 0; i < int'(n_chunks); i++) begin
                 `PS.read_mem(item.addr_y + 40'(i * CHUNK_SIZE), CHUNK_SIZE, chunk_buf);
                 for (w = 0; w < CHUNK_SIZE / 2; w++) begin
@@ -629,7 +706,8 @@ module conv_tb;
             // and the 16-byte-aligned end of the y region were poisoned
             // before the run and are never part of the tensor; if the
             // kernel's tail strobe were wrong they would be overwritten.
-            begin
+            // (A pattern item checked its gaps and tail above.)
+            if (!item.has_pattern()) begin
                 int unsigned pad_base, pad_len;
                 logic [CHUNK_BITS-1:0] pad_buf;
                 // read_mem must start on a 16-byte beat (an 8-byte-aligned
@@ -824,6 +902,7 @@ module conv_tb;
             int unsigned dil_h, dil_w;
             int unsigned pt, pl;
             int unsigned has_bias, is_dw;
+            int unsigned y_cs, y_cn, y_gs;
             string label;
             int          rc;
             int          first;
@@ -838,12 +917,26 @@ module conv_tb;
             if (first == line.len()) return null;
             if (line.getc(first) == "#") return null;
 
+            // idx batch in_ch in_h in_w out_ch out_h out_w kh kw sh sw dh dw pt pl
+            // has_bias is_dw y_cs y_cn y_gs label (the pattern columns since
+            // RPU_PLAN §13; an older manifest has the label after is_dw)
+            y_cs = 0; y_cn = 0; y_gs = 0;
             rc = $sscanf(line,
-                "%d %d %d %d %d %d %d %d %d %d %d %d %d %d %d %d %d %d %s",
+                "%d %d %d %d %d %d %d %d %d %d %d %d %d %d %d %d %d %d %d %d %d %s",
                 idx, batch, in_ch, in_h, in_w,
                 out_ch, out_h, out_w, kh, kw,
                 stride_h, stride_w, dil_h, dil_w,
-                pt, pl, has_bias, is_dw, label);
+                pt, pl, has_bias, is_dw, y_cs, y_cn, y_gs, label);
+            if (rc >= 21) rc = rc - 3;            // the 18-number count the checks below use
+            else begin
+                y_cs = 0; y_cn = 0; y_gs = 0;
+                rc = $sscanf(line,
+                    "%d %d %d %d %d %d %d %d %d %d %d %d %d %d %d %d %d %d %s",
+                    idx, batch, in_ch, in_h, in_w,
+                    out_ch, out_h, out_w, kh, kw,
+                    stride_h, stride_w, dil_h, dil_w,
+                    pt, pl, has_bias, is_dw, label);
+            end
             if (rc < 18) begin
                 $display("[%0t][TEST] WARN: skipping unparseable manifest line: %s",
                          $time, line);
@@ -855,7 +948,7 @@ module conv_tb;
                      batch, in_ch, in_h, in_w,
                      out_ch, out_h, out_w,
                      kh, kw, stride_h, stride_w, dil_h, dil_w,
-                     pt, pl, has_bias, is_dw);
+                     pt, pl, has_bias, is_dw, y_cs, y_cn, y_gs);
             it.load_fixture(data_dir);
             return it;
         endfunction
@@ -960,18 +1053,45 @@ module conv_tb;
     // in the inactive region.  Re-apply every byte-enabled write 1 ns later
     // when all signals have settled, using direct memory model access.
     // =========================================================================
+    // The racing write may also commit the previous transfer's byte count at the
+    // new address (stale bytes just past a burst; found on the row-ops unit's HP0
+    // port, hw_128 tb_infra.svh) — invisible while y is dense (the next run
+    // overwrites them), exposed by the y channel pattern's gaps (RPU_PLAN §13.2).
+    // So, as tb_infra.svh: restore the 32 bytes past this transfer and the
+    // previous transfer's range (at its address and at this one's) from the shadow.
+    function automatic void ddr_poke(input logic [39:0] ba, input logic [7:0] bd);
+        logic [31:0] wa, tmp_word;
+        int unsigned boff;
+        wa   = ba[33:2];
+        boff = int'(ba[1:0]);
+        if (wa[28] == 1'b0) begin
+            tmp_word = dut.zynq_ultra_ps_e_0.inst.ddrc.ddr.ddr_mem0[wa[27:0]];
+            tmp_word[boff*8 +: 8] = bd;
+            dut.zynq_ultra_ps_e_0.inst.ddrc.ddr.ddr_mem0[wa[27:0]] = tmp_word;
+        end else begin
+            tmp_word = dut.zynq_ultra_ps_e_0.inst.ddrc.ddr.ddr_mem1[wa[27:0]];
+            tmp_word[boff*8 +: 8] = bd;
+            dut.zynq_ultra_ps_e_0.inst.ddrc.ddr.ddr_mem1[wa[27:0]] = tmp_word;
+        end
+    endfunction
+
+    function automatic void ddr_restore(input logic [39:0] ba);
+        if (shadow_mem.exists(longint'(ba))) ddr_poke(ba, shadow_mem[longint'(ba)]);
+    endfunction
+
     initial begin : ddrc_wr_fix
-        int unsigned nb, boff;
-        logic [39:0] ba;
-        logic [31:0] wa;
+        int unsigned nb, prev_nb;
+        logic [39:0] ba, cur_addr, prev_addr;
         logic [ 7:0] bd;
-        logic [31:0] tmp_word;
+        prev_addr = '0;
+        prev_nb   = 0;
         forever begin
             @(posedge dut.zynq_ultra_ps_e_0.inst.ddrc.wr_req);
             #1;
-            nb = int'(dut.zynq_ultra_ps_e_0.inst.ddrc.wr_bytes);
+            nb       = int'(dut.zynq_ultra_ps_e_0.inst.ddrc.wr_bytes);
+            cur_addr = dut.zynq_ultra_ps_e_0.inst.ddrc.wr_addr;
             for (int b = 0; b < nb; b++) begin
-                ba = dut.zynq_ultra_ps_e_0.inst.ddrc.wr_addr + 40'(b);
+                ba = cur_addr + 40'(b);
                 if (dut.zynq_ultra_ps_e_0.inst.ddrc.wr_strb[b]) begin
                     bd = dut.zynq_ultra_ps_e_0.inst.ddrc.wr_data[b*8 +: 8];
                     shadow_mem[longint'(ba)] = bd;
@@ -983,20 +1103,19 @@ module conv_tb;
                 end else begin
                     continue;
                 end
-                begin
-                    wa   = ba[33:2];
-                    boff = int'(ba[1:0]);
-                    if (wa[28] == 1'b0) begin
-                        tmp_word = dut.zynq_ultra_ps_e_0.inst.ddrc.ddr.ddr_mem0[wa[27:0]];
-                        tmp_word[boff*8 +: 8] = bd;
-                        dut.zynq_ultra_ps_e_0.inst.ddrc.ddr.ddr_mem0[wa[27:0]] = tmp_word;
-                    end else begin
-                        tmp_word = dut.zynq_ultra_ps_e_0.inst.ddrc.ddr.ddr_mem1[wa[27:0]];
-                        tmp_word[boff*8 +: 8] = bd;
-                        dut.zynq_ultra_ps_e_0.inst.ddrc.ddr.ddr_mem1[wa[27:0]] = tmp_word;
-                    end
-                end
+                ddr_poke(ba, bd);
             end
+            for (int b = 0; b < 32; b++) ddr_restore(cur_addr + 40'(nb) + 40'(b));
+            for (int b = 0; b < int'(prev_nb) + 32; b++) begin
+                ba = prev_addr + 40'(b);
+                if (ba < cur_addr || ba >= cur_addr + 40'(nb)) ddr_restore(ba);
+            end
+            for (int b = 0; b < int'(prev_nb) + 32; b++) begin
+                ba = cur_addr + 40'(b);
+                if (ba >= cur_addr + 40'(nb)) ddr_restore(ba);
+            end
+            prev_addr = cur_addr;
+            prev_nb   = nb;
         end
     end
 
