@@ -86,6 +86,10 @@ if {$waves} {
 }
 set_property -name {xsim.simulate.log_all_signals} -value false -objects $sim_set
 
+# compile from scratch: an incremental xvlog (--incr, the fileset's INCREMENTAL
+# default) has hung at 100 % CPU without output on a stale database in the
+# project's .sim directory (2026-10-15 conv_test, 2026-10-16 the hw_128 sim)
+set_property -name {INCREMENTAL} -value {false} -objects $sim_set
 puts "\[run_sim\] launch_simulation"
 launch_simulation -mode behavioral -simset $sim_set
 
