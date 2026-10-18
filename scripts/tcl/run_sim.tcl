@@ -1,3 +1,7 @@
+# Copyright 2026 GradeBuilder SL
+# Modifications copyright 2026 Ivan Gubochkin
+# SPDX-License-Identifier: Apache-2.0
+
 # ---------------------------------------------------------------------------
 # run_sim.tcl — open a kernel test-stand Vivado project and run its
 # behavioural testbench in xsim batch mode.  The simulator runs to

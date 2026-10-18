@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# Copyright 2026 GradeBuilder SL
+# SPDX-License-Identifier: Apache-2.0
+
 # ---------------------------------------------------------------------------
 # build_hw.sh — synthesise + implement (+ optionally write bitstream) for
 #              a kernel listed in scripts/registry.sh.

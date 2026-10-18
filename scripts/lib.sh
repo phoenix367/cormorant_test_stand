@@ -1,3 +1,6 @@
+# Copyright 2026 GradeBuilder SL
+# SPDX-License-Identifier: Apache-2.0
+
 # shellcheck shell=bash
 # ---------------------------------------------------------------------------
 # lib.sh — shared helpers for the cormorant_test_stand build/sim scripts.

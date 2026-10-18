@@ -1,7 +1,7 @@
 # cormorant_test_stand
 
 Vivado test harnesses for the four kernels of the
-[**Cormorant** FPGA neural-network inference accelerator](https://github.com/GradeBuilderSL/cormorant) —
+[**Cormorant** FPGA neural-network inference accelerator](https://github.com/phoenix367/cormorant) —
 `ConvKernel`, `PoolingKernel`, `MatmulKernel`, and `VectorOPKernel`.
 Each kernel sits in its own Vivado project under `kernels/<name>_test/` with
 a Zynq-UltraScale+ PS VIP driving the AXI-Lite control port and DDR slave; a
@@ -37,7 +37,7 @@ instance's old value.
 
 The kernel sources, ONNX → C inference scheduler, and reference test-fixture
 generators all live in the parent
-[**cormorant**](https://github.com/GradeBuilderSL/cormorant) repository.
+[**cormorant**](https://github.com/phoenix367/cormorant) repository.
 This test stand consumes two of cormorant's outputs:
 
 - **IP catalogues** — the four kernels' SystemVerilog IPs, produced by
@@ -285,16 +285,8 @@ cover it (see "When the kernel grows new AXI-Lite registers").
 
 ---
 
-## Funding
-
-[![dAIEDGE Project](https://img.shields.io/badge/dAIEDGE-Project-6A5ACD?style=for-the-badge)](https://daiedge.eu/)
-[![EU Horizon Europe](https://img.shields.io/badge/Funded%20by-EU%20Horizon%20Europe-003399?style=for-the-badge&logo=europeanunion&logoColor=white)](https://research-and-innovation.ec.europa.eu/funding/funding-opportunities/funding-programmes-and-open-calls/horizon-europe_en)
-
-This work was supported by the **[dAIEDGE Open Call Programme](https://daiedge.eu/)**, funded by the **[European Union's Horizon Europe research and innovation programme](https://research-and-innovation.ec.europa.eu/funding/funding-opportunities/funding-programmes-and-open-calls/horizon-europe_en)** under project number **#101120726**.
-
----
-
 ## License
 
-Copyright 2026 GradeBuilder SL. Licensed under the
-[Apache License, Version 2.0](LICENSE).
+Copyright 2026 Ivan Gubochkin; portions copyright 2026 GradeBuilder SL (the
+project up to the fork, commit `aa27eae`; see [NOTICE](NOTICE)). Licensed under
+the [Apache License, Version 2.0](LICENSE).

@@ -1,3 +1,6 @@
+# Copyright 2026 GradeBuilder SL
+# SPDX-License-Identifier: Apache-2.0
+
 # shellcheck shell=bash
 # ---------------------------------------------------------------------------
 # Kernel registry — one row per kernel under test.

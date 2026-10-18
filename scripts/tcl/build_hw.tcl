@@ -1,3 +1,6 @@
+# Copyright 2026 GradeBuilder SL
+# SPDX-License-Identifier: Apache-2.0
+
 # ---------------------------------------------------------------------------
 # build_hw.tcl — open a kernel test-stand Vivado project, run synthesis,
 # implementation, and (optionally) write the bitstream.

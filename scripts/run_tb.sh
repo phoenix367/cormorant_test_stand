@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# Copyright 2026 GradeBuilder SL
+# SPDX-License-Identifier: Apache-2.0
+
 # ---------------------------------------------------------------------------
 # run_tb.sh — run the behavioural testbench for a kernel listed in
 #             scripts/registry.sh.

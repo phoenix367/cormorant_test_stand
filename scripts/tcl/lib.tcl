@@ -1,3 +1,7 @@
+# Copyright 2026 GradeBuilder SL
+# Modifications copyright 2026 Ivan Gubochkin
+# SPDX-License-Identifier: Apache-2.0
+
 # ---------------------------------------------------------------------------
 # lib.tcl — shared Tcl helpers for the cormorant_test_stand build/sim scripts.
 #

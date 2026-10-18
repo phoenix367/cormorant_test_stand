@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# Copyright 2026 GradeBuilder SL
+# SPDX-License-Identifier: Apache-2.0
+
 # ---------------------------------------------------------------------------
 # clean.sh — wipe Vivado-generated artefacts for a kernel project so the
 #            next build/sim starts from a clean slate.

@@ -1,3 +1,7 @@
+// Copyright 2026 GradeBuilder SL
+// Modifications copyright 2026 Ivan Gubochkin
+// SPDX-License-Identifier: Apache-2.0
+
 `timescale 1ns / 1ps
 // ============================================================================
 // MatmulKernel HLS Testbench - OOP structure (mirrors vectorop_tb.sv)

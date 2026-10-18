@@ -1,0 +1,18 @@
+Cormorant test stand (cormorant_test_stand)
+Copyright 2026 Ivan Gubochkin
+
+This product includes software developed by GradeBuilder S.L. (Copyright
+2026 GradeBuilder SL): cormorant_test_stand up to commit aa27eae
+(2026-05-19) of https://github.com/GradeBuilderSL/cormorant_test_stand,
+licensed under the Apache License, Version 2.0. This repository is an
+independent fork of it.
+
+Every source file names its copyright holders in its first lines:
+
+- "Copyright 2026 GradeBuilder SL": code from that repository, unchanged;
+- "Copyright 2026 GradeBuilder SL" and "Modifications copyright 2026 Ivan
+  Gubochkin": code from that repository, changed in this fork;
+- "Copyright 2026 Ivan Gubochkin": code written in this fork.
+
+The Vivado project files (.xpr, .bd, .xci, .bda, .ui), which cannot carry a
+header, come from that repository and include the changes of this fork.
