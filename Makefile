@@ -13,7 +13,7 @@
 # is with a per-kernel DATA_DIR_<k> variable (DATA_DIR is also accepted as a
 # shorthand when you're running just one kernel and there is no ambiguity).
 # REPORT_<k> / REPORT works the same way for the JSON scoreboard output, and
-# IP_REPO_<k> / IP_REPO works the same way for the kernel's HLS IP repo
+# IP_REPO_<k> / IP_REPO works the same way for the kernel's IP repo
 # directory (used to override the path stored in the .xpr).  Whether or not
 # IP_REPO is set, the Tcl driver always upgrades any locked kernel IPs and
 # regenerates the BD wrapper before synth/sim.
@@ -88,7 +88,7 @@ help:
 	@echo "  BIT=0                                    skip bitstream (synth + impl only)"
 	@echo "  DATA_DIR_<k>=<dir>                       per-kernel fixtures directory (REQUIRED for tb-<k>)"
 	@echo "  REPORT_<k>=<file>                        per-kernel JSON scoreboard path (default: kernels/<k>_test/<k>_test_report.json)"
-	@echo "  IP_REPO_<k>=<dir>                        override per-kernel HLS IP repo path stored in the .xpr"
+	@echo "  IP_REPO_<k>=<dir>                        override per-kernel IP repo path stored in the .xpr"
 	@echo "  DATA_DIR=<dir>, REPORT=<file>, IP_REPO=<dir>   shorthands when running a single kernel"
 
 list:

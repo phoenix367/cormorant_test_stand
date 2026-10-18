@@ -194,13 +194,13 @@ proc ts_prepare_bd {wrapper_top} {
             foreach r $repos { puts "\[ts\]   - $r" }
         }
         puts "\[ts\]"
-        puts "\[ts\] This usually means the kernel's HLS IP catalogue is missing from the"
+        puts "\[ts\] This usually means the kernel's IP catalogue is missing from the"
         puts "\[ts\] paths above (or the version stored in the .xci is unreachable).  Re-run"
         puts "\[ts\] with --ip-repo / IP_REPO_<kernel>=<dir> pointing at the directory that"
         puts "\[ts\] contains the kernel's exported IP, e.g. for the pooling kernel:"
         puts "\[ts\]"
         puts "\[ts\]   make tb-pooling DATA_DIR_pooling=<...> \\"
-        puts "\[ts\]                   IP_REPO_pooling=/path/to/axi_demo/build/kernels/pooling"
+        puts "\[ts\]                   IP_REPO_pooling=/path/to/cormorant/build/rtl_ip/PoolingKernel_ip"
         puts "\[ts\]"
         error "ts_prepare_bd: locked IPs prevent BD wrapper generation (see above)"
     }

@@ -62,7 +62,8 @@ make all-hw
 ```
 
 `make help` lists the supported knobs (`VIVADO_JOBS`, `BIT`, `DATA_DIR_<k>`,
-`REPORT_<k>`, plus the bare `DATA_DIR` / `REPORT` shorthands).
+`REPORT_<k>`, `IP_REPO_<k>`, plus the bare `DATA_DIR` / `REPORT` / `IP_REPO`
+shorthands).
 
 ## Conventions to preserve
 

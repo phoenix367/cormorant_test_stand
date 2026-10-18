@@ -65,10 +65,10 @@ This test stand consumes two of cormorant's outputs:
 
 | `<k>` | Project                       | BD wrapper                | Testbench top  | Manifest cols              | Fixture files                      |
 |-------|-------------------------------|---------------------------|----------------|----------------------------|------------------------------------|
-| `conv`      | `kernels/conv_test/`      | `design_conv_wrapper`     | `conv_tb`      | 18 ints + label            | `test_NN_{x,w,b,y}.hex`            |
+| `conv`      | `kernels/conv_test/`      | `design_conv_wrapper`     | `conv_tb`      | 21 ints + label            | `test_NN_{x,w,b,y}.hex`            |
 | `pooling`   | `kernels/pooling_test/`   | `design_pooling_wrapper`  | `pooling_tb`   | 18 ints + label            | `test_NN_{x,y}.hex`                |
 | `matmul_op` | `kernels/matmul_op_test/` | `design_matmul_wrapper`   | `matmul_tb`    |  9 ints + label            | `test_NN_{a,b,c}.hex`              |
-| `vector_op` | `kernels/vector_op_test/` | `design_vectorop_wrapper` | `vectorop_tb`  |  7 ints + label            | `test_NN_{a,b,c}.hex`              |
+| `vector_op` | `kernels/vector_op_test/` | `design_vectorop_wrapper` | `vectorop_tb`  | 11 ints + label            | `test_NN_{a,b,c}.hex`              |
 
 `make list` reflects this table at run time. The exact column layout per
 manifest is documented in each testbench's `parse_manifest_line` function.
@@ -166,7 +166,7 @@ so the report deliberately lands next to the project, not next to the
 inputs. `run_tb.sh` parses it at the end and prints a one-line summary:
 
 ```
-[ts] kernel=ConvKernel  total=66  passed=63  failed=0  all_passed=True
+[ts] kernel=ConvKernel  total=66  passed=66  failed=0  all_passed=True
 ```
 
 The wrapper exits non-zero if `all_passed` is false, so it composes cleanly
